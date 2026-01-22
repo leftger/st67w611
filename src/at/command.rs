@@ -372,6 +372,52 @@ pub mod network {
     }
 }
 
+/// Filesystem AT commands
+pub mod filesystem {
+    use super::*;
+
+    /// Write data to filesystem (AT+FS=<op>,<filename>,<offset>,<length>)
+    /// Operation: 0=delete, 1=write, 2=read
+    pub fn fs_write(filename: &str, offset: usize, length: usize) -> Result<AtCommandString> {
+        AtCommand::new("AT+FS")?
+            .with_int_param(1)? // 1 = write operation
+            .with_string_param(filename)?
+            .with_int_param(offset as i32)?
+            .with_int_param(length as i32)?
+            .build()
+    }
+
+    /// Read from filesystem (AT+FS)
+    pub fn fs_read(filename: &str, offset: usize, length: usize) -> Result<AtCommandString> {
+        AtCommand::new("AT+FS")?
+            .with_int_param(2)? // 2 = read operation
+            .with_string_param(filename)?
+            .with_int_param(offset as i32)?
+            .with_int_param(length as i32)?
+            .build()
+    }
+
+    /// Delete file from filesystem (AT+FS)
+    pub fn fs_delete(filename: &str) -> Result<AtCommandString> {
+        AtCommand::new("AT+FS")?
+            .with_int_param(0)? // 0 = delete operation
+            .with_string_param(filename)?
+            .with_int_param(0)?
+            .with_int_param(0)?
+            .build()
+    }
+
+    /// List files (AT+FS=3)
+    pub fn fs_list() -> Result<AtCommandString> {
+        AtCommand::new("AT+FS")?
+            .with_int_param(3)? // 3 = list operation
+            .with_string_param("")?
+            .with_int_param(0)?
+            .with_int_param(0)?
+            .build()
+    }
+}
+
 /// MQTT AT commands
 pub mod mqtt {
     use super::*;

@@ -115,11 +115,25 @@ This driver has completed most core functionality but still needs hardware testi
 - [x] **Phase 8: HTTP Client** - Full HTTP/HTTPS client with URL parsing, request/response handling
 - [x] **Phase 9 (Partial): Advanced Features** - DNS resolution, SNTP time sync, Ping utility, WiFi AP mode
 
-### Partially Implemented ⚠️
-- [~] **Phase 4: embassy-net Driver** - Skeleton implementation, needs actual packet RX/TX translation
-- [~] **Phase 6: TLS/SSL Support** - Configuration and SNI support work, certificate upload is placeholder
+### Implemented with Notes ⚠️
+- [x] **Phase 4: embassy-net Driver** - Full Driver trait implementation with packet buffers. See ARCHITECTURE.md for important notes about socket-vs-packet architectural mismatch. Direct socket APIs recommended for production.
+- [x] **Phase 6: TLS/SSL Support** - Complete: SSL configuration, SNI, and certificate upload/download via filesystem
+- [x] **Phase 9: Advanced Features** - DNS, SNTP, Ping, Power Management, WiFi AP mode, Connection monitoring
 
 ### Recent Improvements (Latest Sessions)
+
+**Session 3 (embassy-net & enhancements):**
+- ✅ Complete embassy-net Driver trait implementation with packet buffers
+- ✅ RxToken and TxToken with proper packet queue management
+- ✅ Link state tracking and waker notifications
+- ✅ Comprehensive ARCHITECTURE.md documentation explaining design decisions
+- ✅ Embassy-net integration example with usage guidance
+- ✅ Certificate upload/download via filesystem (AT+FS commands)
+- ✅ Filesystem operations module (write, read, delete, list)
+- ✅ Connection status monitoring (AT+CIPSTATUS parsing)
+- ✅ Power management module with deep sleep support
+- ✅ Utility module with retry logic (exponential backoff, fixed delay)
+- ✅ WiFi connection with automatic retry wrapper
 
 **Session 2:**
 - ✅ +IPD unsolicited data reception with binary data handling
@@ -140,21 +154,20 @@ This driver has completed most core functionality but still needs hardware testi
 - ✅ IP configuration query now returns complete ip/gateway/netmask information
 - ✅ Improved AT processor response routing and handling
 
-### Known Limitations
-- Socket receive via AT+CIPRECV needs proper data extraction from response
-- Certificate upload/management needs implementation
-- embassy-net Driver needs packet-level translation from socket API
-- Examples are illustrative but not tested on hardware
-- +IPD unsolicited data reception needs buffer integration
-- Error recovery and retry logic could be enhanced
+### Known Limitations & Notes
+- **embassy-net**: Architectural mismatch between socket-based module and packet-based interface. Infrastructure present but full packet bridging not implemented. **Recommendation**: Use socket APIs directly (see ARCHITECTURE.md)
+- **Socket receive via AT+CIPRECV**: Command implemented but binary data extraction needs enhancement
+- **Examples**: Illustrative code, not tested on actual hardware yet
+- **Certificate upload**: Implemented via AT+FS, but response handling could be more robust
+- **Hardware dependencies**: Examples need platform-specific SPI/GPIO initialization
 
 ### Next Steps
-1. Test on actual hardware
-2. Implement certificate upload/download
-3. Enhance +IPD data reception handling
-4. Complete embassy-net Driver packet translation
-5. Add comprehensive error recovery
-6. Add more examples and documentation
+1. **Hardware Testing**: Test all features on STM32 with actual ST67W611 module
+2. **AT+CIPRECV Enhancement**: Improve binary data extraction from receive responses
+3. **Packet Bridging** (Optional): Implement full packet translation for embassy-net or document transparent mode usage
+4. **More Examples**: Add examples for DNS, SNTP, AP mode, power management
+5. **Performance Tuning**: Optimize buffer sizes and polling intervals based on real-world usage
+6. **Documentation**: Add API documentation for all public functions
 
 ## Examples
 

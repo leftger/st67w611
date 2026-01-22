@@ -49,6 +49,10 @@ required-features = []
 name = "https_request"
 required-features = []
 
+[[example]]
+name = "embassy_net_integration"
+required-features = []
+
 [profile.release]
 codegen-units = 1
 debug = 2

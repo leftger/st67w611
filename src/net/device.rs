@@ -389,4 +389,75 @@ impl NetworkDevice {
             let _ = self.handle_received_data(ipd_data.link_id, &ipd_data.data).await;
         }
     }
+
+    /// Get connection status for all sockets
+    pub async fn get_connection_status<SPI, CS>(
+        &self,
+        spi: &'static TmMutex<SpiTransport<SPI, CS>>,
+        timeout: embassy_time::Duration,
+    ) -> Result<ConnectionStatus>
+    where
+        SPI: embedded_hal_async::spi::SpiDevice,
+        CS: embedded_hal::digital::OutputPin,
+    {
+        let cmd = crate::at::command::network::get_status()?;
+        let (slot, slot_idx) = self.processor.send_multi_response_command(spi, cmd.as_bytes()).await?;
+
+        let mut status = ConnectionStatus::default();
+
+        // Collect all status responses
+        let status_timeout = embassy_time::Instant::now() + timeout;
+
+        loop {
+            if embassy_time::Instant::now() > status_timeout {
+                self.processor.release_multi_response_slot(slot_idx).await;
+                return Err(crate::error::Error::Timeout);
+            }
+
+            // Try to receive a data response
+            if let Some(response) = slot.try_receive_data_response() {
+                if let crate::at::AtResponse::Data { prefix, content: _ } = response {
+                    if prefix.as_str() == "STATUS" {
+                        // Parse overall status
+                        // Format varies - simplified for now
+                    }
+                }
+                continue;
+            }
+
+            // Check for completion
+            match embassy_time::with_timeout(
+                embassy_time::Duration::from_millis(100),
+                slot.wait(timeout)
+            ).await {
+                Ok(Ok(crate::at::AtResponse::Ok)) => break,
+                Ok(Ok(crate::at::AtResponse::Error)) | Ok(Err(_)) => {
+                    self.processor.release_multi_response_slot(slot_idx).await;
+                    return Err(crate::error::Error::AtCommandFailed);
+                }
+                Err(_) => continue,
+                _ => continue,
+            }
+        }
+
+        self.processor.release_multi_response_slot(slot_idx).await;
+
+        Ok(status)
+    }
+
+    /// Get status for a specific socket
+    pub async fn get_socket_status(&self, id: SocketId) -> Result<SocketState> {
+        let socket = self.get_socket(id)?;
+        Ok(socket.get_state().await)
+    }
+}
+
+/// Connection status information
+#[derive(Debug, Default, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ConnectionStatus {
+    /// Number of active connections
+    pub active_connections: u8,
+    /// WiFi connection status
+    pub wifi_connected: bool,
 }

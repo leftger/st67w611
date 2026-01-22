@@ -55,9 +55,11 @@ pub mod error;
 pub mod http;
 pub mod mqtt;
 pub mod net;
+pub mod power;
 pub mod sync;
 pub mod tls;
 pub mod types;
+pub mod util;
 pub mod wifi;
 
 // Public API exports
@@ -143,6 +145,22 @@ where
         result
     }
 
+    /// Connect to WiFi with automatic retry on failure
+    pub async fn wifi_connect_with_retry(
+        &self,
+        ssid: &str,
+        password: &str,
+        max_attempts: u8,
+    ) -> Result<()> {
+        util::retry_with_backoff(
+            max_attempts,
+            Duration::from_secs(1),
+            Duration::from_secs(10),
+            || async { self.wifi_connect(ssid, password).await },
+        )
+        .await
+    }
+
     /// Disconnect from WiFi
     pub async fn wifi_disconnect(&self) -> Result<()> {
         let result = self.wifi.disconnect(self.spi).await;
@@ -203,6 +221,16 @@ where
         advanced::Ping::new(self.processor, self.config.command_timeout)
     }
 
+    /// Create a power manager
+    pub fn power_manager(&self) -> power::PowerManager {
+        power::PowerManager::new(self.processor, self.config.command_timeout)
+    }
+
+    /// Get connection status for all sockets
+    pub async fn get_connection_status(&self) -> Result<net::device::ConnectionStatus> {
+        self.network.get_connection_status(self.spi, self.config.command_timeout).await
+    }
+
     /// Get the AT processor for direct access
     pub fn processor(&self) -> &AtProcessor {
         self.processor
@@ -222,6 +250,20 @@ where
     /// Call this once during initialization.
     pub async fn run_ipd_task(&'static self) {
         self.network.ipd_processor_task().await
+    }
+
+    /// Create an embassy-net driver instance
+    ///
+    /// Note: The embassy-net driver has architectural limitations due to the module's
+    /// built-in TCP/IP stack. For most applications, using the socket APIs directly
+    /// (HttpClient, MqttClient, NetworkDevice) is recommended.
+    ///
+    /// See the documentation in `net::driver` for more details.
+    pub fn create_embassy_net_driver(
+        &self,
+        mac_address: MacAddress,
+    ) -> St67w611Driver {
+        St67w611Driver::new(self.network, mac_address)
     }
 }
 
