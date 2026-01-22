@@ -34,8 +34,17 @@ pub enum SocketEvent {
     Connected(u8),
     /// Socket closed
     Closed(u8),
-    /// Data received on socket
+    /// Data received on socket (notification only, use receive to get data)
     DataReceived { link_id: u8, length: usize },
+}
+
+/// IPD data notification with actual data bytes
+#[derive(Debug)]
+pub struct IpdData {
+    /// Socket/link ID
+    pub link_id: u8,
+    /// Data bytes (up to 2048 bytes per notification)
+    pub data: heapless::Vec<u8, 2048>,
 }
 
 /// Response slot for waiting on command responses
@@ -156,6 +165,8 @@ pub struct AtProcessor {
     wifi_events: Channel<CriticalSectionRawMutex, WiFiEvent, 4>,
     /// Socket event channel
     socket_events: Channel<CriticalSectionRawMutex, SocketEvent, 16>,
+    /// IPD data channel for received socket data
+    ipd_data: Channel<CriticalSectionRawMutex, IpdData, 4>,
 }
 
 impl AtProcessor {
@@ -166,6 +177,7 @@ impl AtProcessor {
             active_slot: TmMutex::new(None),
             wifi_events: Channel::new(),
             socket_events: Channel::new(),
+            ipd_data: Channel::new(),
         }
     }
 
@@ -177,6 +189,11 @@ impl AtProcessor {
     /// Get socket event channel receiver
     pub fn socket_event_receiver(&self) -> &Channel<CriticalSectionRawMutex, SocketEvent, 16> {
         &self.socket_events
+    }
+
+    /// Get IPD data channel receiver
+    pub fn ipd_data_receiver(&self) -> &Channel<CriticalSectionRawMutex, IpdData, 4> {
+        &self.ipd_data
     }
 
     /// Send a command and wait for response
@@ -267,54 +284,6 @@ impl AtProcessor {
         }
     }
 
-    /// Process a received line
-    async fn process_line(&self, line: &str) -> Result<()> {
-        // Parse the line
-        let response = match parser::parse_line(line)? {
-            Some(r) => r,
-            None => return Ok(()), // Empty line
-        };
-
-        // Check if this is an unsolicited event
-        if let AtResponse::Data { ref prefix, ref content } = response {
-            if self.handle_unsolicited_event(prefix, content) {
-                return Ok(());
-            }
-        }
-
-        // Get the active slot index
-        let active_slot_idx = {
-            let active = self.active_slot.lock().await;
-            *active
-        };
-
-        // If there's an active slot, route the response there
-        if let Some(idx) = active_slot_idx {
-            if idx < self.response_slots.slots.len() {
-                let slot = &self.response_slots.slots[idx];
-
-                // Check if this is a multi-response command
-                let is_multi = slot.is_multi_response_enabled().await;
-
-                match response {
-                    // For OK/ERROR responses, signal completion
-                    AtResponse::Ok | AtResponse::Error => {
-                        slot.signal(Ok(response));
-                    }
-                    // For Data responses in multi-response mode, send to channel
-                    AtResponse::Data { .. } if is_multi => {
-                        slot.send_data_response(response);
-                    }
-                    // For other responses, signal directly
-                    _ => {
-                        slot.signal(Ok(response));
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
 
     /// Handle unsolicited events
     fn handle_unsolicited_event(&self, prefix: &str, content: &str) -> bool {
@@ -375,6 +344,7 @@ impl AtProcessor {
     {
         let mut rx_buffer = [0u8; 4096];
         let mut line_buffer = LineBuffer::new();
+        let mut ipd_state: Option<(u8, usize, heapless::Vec<u8, 2048>)> = None; // (link_id, remaining_bytes, data_buffer)
 
         loop {
             // Read from SPI
@@ -390,11 +360,51 @@ impl AtProcessor {
                 }
             };
 
-            // Process received data line by line
-            for &byte in &rx_buffer[..len] {
+            let mut i = 0;
+            while i < len {
+                // Check if we're in IPD data reading mode
+                if let Some((link_id, remaining, ref mut data_buf)) = ipd_state {
+                    // Read binary data bytes
+                    let to_read = core::cmp::min(remaining, len - i);
+                    for _ in 0..to_read {
+                        if data_buf.push(rx_buffer[i]).is_err() {
+                            // Buffer full - this shouldn't happen if sizes are correct
+                            break;
+                        }
+                        i += 1;
+                    }
+
+                    let new_remaining = remaining - to_read;
+                    if new_remaining == 0 {
+                        // We've read all the IPD data
+                        let data = ipd_state.take().unwrap().2;
+                        let _ = self.ipd_data.try_send(IpdData {
+                            link_id,
+                            data,
+                        });
+                    } else {
+                        // Update remaining count
+                        ipd_state = Some((link_id, new_remaining, data_buf.clone()));
+                    }
+                    continue;
+                }
+
+                // Normal line-by-line processing
+                let byte = rx_buffer[i];
+                i += 1;
+
                 if byte == b'\n' {
                     // Process complete line
-                    let _ = self.process_line(line_buffer.as_str()).await;
+                    if let Ok(Some(response)) = parser::parse_line(line_buffer.as_str()) {
+                        // Check if this is an IPD header
+                        if let AtResponse::IpdHeader { link_id, length } = response {
+                            // Switch to binary data reading mode
+                            ipd_state = Some((link_id, length, heapless::Vec::new()));
+                        } else {
+                            // Normal response processing
+                            let _ = self.process_line_response(response).await;
+                        }
+                    }
                     line_buffer.clear();
                 } else if byte != b'\r' {
                     // Add to line buffer (skip CR)
@@ -408,5 +418,48 @@ impl AtProcessor {
             // Small delay between reads
             Timer::after(Duration::from_millis(10)).await;
         }
+    }
+
+    /// Process a parsed response (extracted from process_line for reuse)
+    async fn process_line_response(&self, response: AtResponse) -> Result<()> {
+        // Check if this is an unsolicited event
+        if let AtResponse::Data { ref prefix, ref content } = response {
+            if self.handle_unsolicited_event(prefix, content) {
+                return Ok(());
+            }
+        }
+
+        // Get the active slot index
+        let active_slot_idx = {
+            let active = self.active_slot.lock().await;
+            *active
+        };
+
+        // If there's an active slot, route the response there
+        if let Some(idx) = active_slot_idx {
+            if idx < self.response_slots.slots.len() {
+                let slot = &self.response_slots.slots[idx];
+
+                // Check if this is a multi-response command
+                let is_multi = slot.is_multi_response_enabled().await;
+
+                match response {
+                    // For OK/ERROR responses, signal completion
+                    AtResponse::Ok | AtResponse::Error => {
+                        slot.signal(Ok(response));
+                    }
+                    // For Data responses in multi-response mode, send to channel
+                    AtResponse::Data { .. } if is_multi => {
+                        slot.send_data_response(response);
+                    }
+                    // For other responses, signal directly
+                    _ => {
+                        slot.signal(Ok(response));
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }

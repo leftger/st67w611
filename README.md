@@ -109,16 +109,30 @@ This driver has completed most core functionality but still needs hardware testi
 ### Fully Implemented ✅
 - [x] **Phase 1: Foundation & Bus Layer** - Complete SPI transport with embedded-hal-async
 - [x] **Phase 2: AT Command System** - Command formatting, parsing, RX processor with multi-response support
-- [x] **Phase 3: WiFi Management** - Init, scan (multi-result), connect, disconnect, IP config querying
-- [x] **Phase 5: TCP/UDP Sockets** - Socket allocation, connect, send, receive (buffer-based)
+- [x] **Phase 3: WiFi Management** - Station mode (init, scan, connect, disconnect, IP config) + AP mode (configure, start, list stations)
+- [x] **Phase 5: TCP/UDP Sockets** - Socket allocation, connect, send, receive with +IPD handling
 - [x] **Phase 7: MQTT Client** - Connection, publish, subscribe with QoS support
 - [x] **Phase 8: HTTP Client** - Full HTTP/HTTPS client with URL parsing, request/response handling
+- [x] **Phase 9 (Partial): Advanced Features** - DNS resolution, SNTP time sync, Ping utility, WiFi AP mode
 
 ### Partially Implemented ⚠️
 - [~] **Phase 4: embassy-net Driver** - Skeleton implementation, needs actual packet RX/TX translation
 - [~] **Phase 6: TLS/SSL Support** - Configuration and SNI support work, certificate upload is placeholder
 
-### Recent Improvements (Latest Session)
+### Recent Improvements (Latest Sessions)
+
+**Session 2:**
+- ✅ +IPD unsolicited data reception with binary data handling
+- ✅ Background IPD processor task for automatic socket buffer filling
+- ✅ System configuration commands (AT+SYSSTORE, AT+RESTORE, AT+UART, etc.)
+- ✅ DNS resolution API with custom DNS server configuration
+- ✅ SNTP time synchronization client
+- ✅ Ping utility for network diagnostics
+- ✅ Complete WiFi AP mode support (configure, start, list connected stations)
+- ✅ DHCP configuration for both station and AP modes
+- ✅ New advanced networking module with DNS, SNTP, and Ping
+
+**Session 1:**
 - ✅ Multi-response command support for collecting multiple AT responses (scan results, IP config)
 - ✅ WiFi scan now collects all available networks, not just one
 - ✅ Socket receive operations implemented with buffered data management

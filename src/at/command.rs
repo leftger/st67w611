@@ -95,6 +95,39 @@ pub mod system {
             .with_int_param(time_ms as i32)?
             .build()
     }
+
+    /// Restore factory settings (AT+RESTORE)
+    pub fn restore_factory() -> Result<AtCommandString> {
+        AtCommand::new("AT+RESTORE")?.build()
+    }
+
+    /// Set UART configuration (AT+UART_CUR)
+    pub fn set_uart(baudrate: u32, databits: u8, stopbits: u8, parity: u8) -> Result<AtCommandString> {
+        AtCommand::new("AT+UART_CUR")?
+            .with_int_param(baudrate as i32)?
+            .with_int_param(databits as i32)?
+            .with_int_param(stopbits as i32)?
+            .with_int_param(parity as i32)?
+            .build()
+    }
+
+    /// Set system store mode (AT+SYSSTORE)
+    /// 0 = don't save to flash, 1 = save to flash
+    pub fn set_sysstore(mode: u8) -> Result<AtCommandString> {
+        AtCommand::new("AT+SYSSTORE")?
+            .with_int_param(mode as i32)?
+            .build()
+    }
+
+    /// Get system RAM usage (AT+SYSRAM?)
+    pub fn get_ram_usage() -> Result<AtCommandString> {
+        AtCommand::new("AT+SYSRAM?")?.build()
+    }
+
+    /// Get system flash info (AT+SYSFLASH?)
+    pub fn get_flash_info() -> Result<AtCommandString> {
+        AtCommand::new("AT+SYSFLASH?")?.build()
+    }
 }
 
 /// WiFi AT commands
@@ -159,6 +192,65 @@ pub mod wifi {
     /// Get MAC address (AT+CIPSTAMAC?)
     pub fn get_mac() -> Result<AtCommandString> {
         AtCommand::new("AT+CIPSTAMAC?")?.build()
+    }
+
+    /// Configure soft AP (AT+CWSAP)
+    /// ssid: AP SSID
+    /// password: AP password (8-63 chars for WPA/WPA2)
+    /// channel: WiFi channel (1-13)
+    /// encryption: 0=OPEN, 2=WPA_PSK, 3=WPA2_PSK, 4=WPA_WPA2_PSK
+    pub fn configure_ap(ssid: &str, password: &str, channel: u8, encryption: u8) -> Result<AtCommandString> {
+        AtCommand::new("AT+CWSAP")?
+            .with_string_param(ssid)?
+            .with_string_param(password)?
+            .with_int_param(channel as i32)?
+            .with_int_param(encryption as i32)?
+            .build()
+    }
+
+    /// Get soft AP configuration (AT+CWSAP?)
+    pub fn get_ap_config() -> Result<AtCommandString> {
+        AtCommand::new("AT+CWSAP?")?.build()
+    }
+
+    /// List connected stations (AT+CWLIF)
+    pub fn list_stations() -> Result<AtCommandString> {
+        AtCommand::new("AT+CWLIF")?.build()
+    }
+
+    /// Set AP IP configuration (AT+CIPAP)
+    pub fn set_ap_ip(ip: &Ipv4Address, gateway: &Ipv4Address, netmask: &Ipv4Address) -> Result<AtCommandString> {
+        use core::fmt::Write;
+
+        let mut ip_str = String::<16>::new();
+        write!(ip_str, "{}.{}.{}.{}", ip.0[0], ip.0[1], ip.0[2], ip.0[3]).map_err(|_| Error::BufferTooSmall)?;
+
+        let mut gw_str = String::<16>::new();
+        write!(gw_str, "{}.{}.{}.{}", gateway.0[0], gateway.0[1], gateway.0[2], gateway.0[3]).map_err(|_| Error::BufferTooSmall)?;
+
+        let mut nm_str = String::<16>::new();
+        write!(nm_str, "{}.{}.{}.{}", netmask.0[0], netmask.0[1], netmask.0[2], netmask.0[3]).map_err(|_| Error::BufferTooSmall)?;
+
+        AtCommand::new("AT+CIPAP")?
+            .with_string_param(&ip_str)?
+            .with_string_param(&gw_str)?
+            .with_string_param(&nm_str)?
+            .build()
+    }
+
+    /// Get AP IP configuration (AT+CIPAP?)
+    pub fn get_ap_ip() -> Result<AtCommandString> {
+        AtCommand::new("AT+CIPAP?")?.build()
+    }
+
+    /// Set DHCP configuration (AT+CWDHCP)
+    /// mode: 0=soft-AP, 1=station, 2=both
+    /// enable: true to enable DHCP, false to disable
+    pub fn set_dhcp(mode: u8, enable: bool) -> Result<AtCommandString> {
+        AtCommand::new("AT+CWDHCP")?
+            .with_int_param(mode as i32)?
+            .with_int_param(if enable { 1 } else { 0 })?
+            .build()
     }
 }
 
@@ -230,6 +322,52 @@ pub mod network {
         AtCommand::new("AT+CIPSSLCSNI")?
             .with_int_param(link_id as i32)?
             .with_string_param(hostname)?
+            .build()
+    }
+
+    /// DNS resolution (AT+CIPDOMAIN)
+    pub fn dns_lookup(hostname: &str) -> Result<AtCommandString> {
+        AtCommand::new("AT+CIPDOMAIN")?
+            .with_string_param(hostname)?
+            .build()
+    }
+
+    /// Set DNS server (AT+CIPDNS_CUR)
+    pub fn set_dns(enable: bool, dns1: &str, dns2: Option<&str>) -> Result<AtCommandString> {
+        let mut cmd = AtCommand::new("AT+CIPDNS_CUR")?
+            .with_int_param(if enable { 1 } else { 0 })?
+            .with_string_param(dns1)?;
+
+        if let Some(dns2_addr) = dns2 {
+            cmd = cmd.with_string_param(dns2_addr)?;
+        }
+
+        cmd.build()
+    }
+
+    /// Get DNS server configuration (AT+CIPDNS_CUR?)
+    pub fn get_dns() -> Result<AtCommandString> {
+        AtCommand::new("AT+CIPDNS_CUR?")?.build()
+    }
+
+    /// Enable/disable SNTP (AT+CIPSNTPCFG)
+    pub fn configure_sntp(enable: bool, timezone: i8, server1: &str) -> Result<AtCommandString> {
+        AtCommand::new("AT+CIPSNTPCFG")?
+            .with_int_param(if enable { 1 } else { 0 })?
+            .with_int_param(timezone as i32)?
+            .with_string_param(server1)?
+            .build()
+    }
+
+    /// Get SNTP time (AT+CIPSNTPTIME?)
+    pub fn get_sntp_time() -> Result<AtCommandString> {
+        AtCommand::new("AT+CIPSNTPTIME?")?.build()
+    }
+
+    /// Set ping timeout (AT+PING)
+    pub fn ping(host: &str) -> Result<AtCommandString> {
+        AtCommand::new("AT+PING")?
+            .with_string_param(host)?
             .build()
     }
 }

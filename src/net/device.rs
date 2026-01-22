@@ -375,4 +375,18 @@ impl NetworkDevice {
             Err(Error::InvalidSocket)
         }
     }
+
+    /// Background task to process IPD data from the AT processor
+    /// This should be spawned as a task to continuously route received socket data
+    pub async fn ipd_processor_task(&'static self) {
+        let ipd_channel = self.processor.ipd_data_receiver();
+
+        loop {
+            // Wait for IPD data
+            let ipd_data = ipd_channel.receive().await;
+
+            // Route to appropriate socket buffer
+            let _ = self.handle_received_data(ipd_data.link_id, &ipd_data.data).await;
+        }
+    }
 }

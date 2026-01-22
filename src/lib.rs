@@ -47,6 +47,7 @@
 pub use embassy_time::Duration;
 
 // Module declarations
+pub mod advanced;
 pub mod at;
 pub mod bus;
 pub mod config;
@@ -187,6 +188,21 @@ where
         http::HttpClient::new(self.network, self.processor, self.config.command_timeout)
     }
 
+    /// Create a DNS resolver
+    pub fn dns_resolver(&self) -> advanced::DnsResolver {
+        advanced::DnsResolver::new(self.processor, self.config.command_timeout)
+    }
+
+    /// Create an SNTP client
+    pub fn sntp_client(&self) -> advanced::SntpClient {
+        advanced::SntpClient::new(self.processor, self.config.command_timeout)
+    }
+
+    /// Create a ping utility
+    pub fn ping(&self) -> advanced::Ping {
+        advanced::Ping::new(self.processor, self.config.command_timeout)
+    }
+
     /// Get the AT processor for direct access
     pub fn processor(&self) -> &AtProcessor {
         self.processor
@@ -198,6 +214,14 @@ where
     /// Call this once during initialization.
     pub async fn run_rx_task(&'static self) {
         self.processor.rx_task(self.spi).await
+    }
+
+    /// Spawn the IPD processor task
+    ///
+    /// This task handles incoming socket data (+IPD notifications).
+    /// Call this once during initialization.
+    pub async fn run_ipd_task(&'static self) {
+        self.network.ipd_processor_task().await
     }
 }
 

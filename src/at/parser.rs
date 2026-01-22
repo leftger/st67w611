@@ -28,6 +28,9 @@ pub enum AtResponse {
     Data { prefix: LineBuffer, content: LineBuffer },
     /// Raw data
     Raw(LineBuffer),
+    /// +IPD notification header (link_id, length)
+    /// The actual data bytes follow this notification
+    IpdHeader { link_id: u8, length: usize },
 }
 
 /// Parse a single line of AT response
@@ -48,7 +51,28 @@ pub fn parse_line(line: &str) -> Result<Option<AtResponse>> {
         _ => {}
     }
 
-    // Check for prefixed data (e.g., "+CWLAP:...")
+    // Check for +IPD notification (special handling for binary data)
+    if trimmed.starts_with("+IPD,") {
+        // Parse +IPD,<link_id>,<length>:
+        if let Some(colon_pos) = trimmed.find(':') {
+            let params = &trimmed[5..colon_pos]; // Skip "+IPD,"
+            let parts = parse_csv(params);
+
+            if parts.len() >= 2 {
+                if let (Ok(link_id), Ok(length)) = (
+                    parse_int(&parts[0]),
+                    parse_int(&parts[1]),
+                ) {
+                    return Ok(Some(AtResponse::IpdHeader {
+                        link_id: link_id as u8,
+                        length: length as usize,
+                    }));
+                }
+            }
+        }
+    }
+
+    // Check for other prefixed data (e.g., "+CWLAP:...")
     if trimmed.starts_with('+') {
         if let Some(colon_pos) = trimmed.find(':') {
             let prefix = &trimmed[0..colon_pos];

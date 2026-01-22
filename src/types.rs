@@ -98,6 +98,44 @@ pub struct ScanResult {
 /// Collection of scan results
 pub type ScanResults = Vec<ScanResult, MAX_SCAN_RESULTS>;
 
+/// AP (Access Point) configuration
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ApConfig {
+    /// AP SSID
+    pub ssid: Ssid,
+    /// AP password
+    pub password: Password,
+    /// WiFi channel (1-13)
+    pub channel: u8,
+    /// Security type
+    pub security: WiFiSecurityType,
+    /// Maximum number of stations (typically 4-8)
+    pub max_connections: u8,
+}
+
+impl Default for ApConfig {
+    fn default() -> Self {
+        Self {
+            ssid: Ssid::new(),
+            password: Password::new(),
+            channel: 1,
+            security: WiFiSecurityType::Wpa2Psk,
+            max_connections: 4,
+        }
+    }
+}
+
+/// Connected station information
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct StationInfo {
+    /// Station IP address
+    pub ip: Ipv4Address,
+    /// Station MAC address
+    pub mac: MacAddress,
+}
+
 /// IP address (IPv4)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

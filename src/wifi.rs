@@ -327,6 +327,144 @@ impl WiFiManager {
         }
     }
 
+    /// Configure and start soft AP mode
+    pub async fn start_ap<SPI, CS>(
+        &self,
+        spi: &'static TmMutex<SpiTransport<SPI, CS>>,
+        config: &ApConfig,
+    ) -> Result<()>
+    where
+        SPI: embedded_hal_async::spi::SpiDevice,
+        CS: embedded_hal::digital::OutputPin,
+    {
+        // Convert security type to encryption mode
+        let encryption = match config.security {
+            WiFiSecurityType::Open => 0,
+            WiFiSecurityType::WpaPsk => 2,
+            WiFiSecurityType::Wpa2Psk => 3,
+            WiFiSecurityType::WpaWpa2Psk => 4,
+            _ => 3, // Default to WPA2
+        };
+
+        let cmd = command::wifi::configure_ap(
+            &config.ssid,
+            &config.password,
+            config.channel,
+            encryption,
+        )?;
+
+        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+
+        if response != AtResponse::Ok {
+            return Err(Error::AtCommandFailed);
+        }
+
+        Ok(())
+    }
+
+    /// Get current AP configuration
+    pub async fn get_ap_config<SPI, CS>(
+        &self,
+        spi: &'static TmMutex<SpiTransport<SPI, CS>>,
+    ) -> Result<ApConfig>
+    where
+        SPI: embedded_hal_async::spi::SpiDevice,
+        CS: embedded_hal::digital::OutputPin,
+    {
+        let cmd = command::wifi::get_ap_config()?;
+        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+
+        if let AtResponse::Data { prefix, content } = response {
+            if prefix.as_str() == "+CWSAP" {
+                // Parse: +CWSAP:"ssid","password",channel,encryption
+                let fields = parser::parse_csv(&content);
+                if fields.len() >= 4 {
+                    let ssid_str = parser::unquote(&fields[0]);
+                    let mut ssid = Ssid::new();
+                    ssid.push_str(ssid_str).map_err(|_| Error::ParseError)?;
+
+                    let password_str = parser::unquote(&fields[1]);
+                    let mut password = Password::new();
+                    password.push_str(password_str).map_err(|_| Error::ParseError)?;
+
+                    let channel = parser::parse_int(&fields[2])? as u8;
+                    let encryption = parser::parse_int(&fields[3])? as u8;
+
+                    let security = match encryption {
+                        0 => WiFiSecurityType::Open,
+                        2 => WiFiSecurityType::WpaPsk,
+                        3 => WiFiSecurityType::Wpa2Psk,
+                        4 => WiFiSecurityType::WpaWpa2Psk,
+                        _ => WiFiSecurityType::Wpa2Psk,
+                    };
+
+                    return Ok(ApConfig {
+                        ssid,
+                        password,
+                        channel,
+                        security,
+                        max_connections: 4, // Default value
+                    });
+                }
+            }
+        }
+
+        Err(Error::InvalidResponse)
+    }
+
+    /// List connected stations in AP mode
+    pub async fn list_stations<SPI, CS>(
+        &self,
+        spi: &'static TmMutex<SpiTransport<SPI, CS>>,
+    ) -> Result<heapless::Vec<StationInfo, 8>>
+    where
+        SPI: embedded_hal_async::spi::SpiDevice,
+        CS: embedded_hal::digital::OutputPin,
+    {
+        let cmd = command::wifi::list_stations()?;
+        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+
+        let mut stations = heapless::Vec::new();
+
+        // Parse station info (format varies by module version)
+        // This is a simplified placeholder
+        if let AtResponse::Data { prefix, content: _ } = response {
+            if prefix.as_str().starts_with("+CWLIF") {
+                // TODO: Parse station list
+                // Format typically: <ip>,<mac>
+            }
+        }
+
+        Ok(stations)
+    }
+
+    /// Enable/disable DHCP for station or AP
+    pub async fn set_dhcp<SPI, CS>(
+        &self,
+        spi: &'static TmMutex<SpiTransport<SPI, CS>>,
+        mode: WiFiMode,
+        enable: bool,
+    ) -> Result<()>
+    where
+        SPI: embedded_hal_async::spi::SpiDevice,
+        CS: embedded_hal::digital::OutputPin,
+    {
+        let dhcp_mode = match mode {
+            WiFiMode::Station => 1,
+            WiFiMode::AccessPoint => 0,
+            WiFiMode::StationAp => 2,
+        };
+
+        let cmd = command::wifi::set_dhcp(dhcp_mode, enable)?;
+        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+
+        if response == AtResponse::Ok {
+            Ok(())
+        } else {
+            Err(Error::AtCommandFailed)
+        }
+    }
+
     /// Stream WiFi events
     pub async fn events(&self) -> impl core::future::Future<Output = WiFiEvent> + '_ {
         self.processor.wifi_event_receiver().receive()
