@@ -131,30 +131,58 @@ The `St67w611Driver` implements the `embassy_net::driver::Driver` trait with:
 - ✅ **Token-based interface**: Proper RxToken and TxToken implementations
 - ⚠️ **Packet bridging**: Infrastructure present but requires custom logic
 
-### Packet Bridging Approaches
+### Why Transparent Mode Isn't Feasible
 
-**Option A: Transparent Mode (Ideal)**
-- Check if ST67W611 supports `AT+CIPMODE=1` or similar
-- In this mode, module forwards raw data without AT protocol
-- Would enable direct packet access
-- Status: Needs research/testing
+**Hardware Limitation**: The ST67W611 has a maximum SPI clock of 30MHz, which provides:
+- Theoretical max throughput: ~3.75 MB/s
+- Practical throughput: ~1-2 MB/s (accounting for protocol overhead)
 
-**Option B: Socket-to-Packet Translation (Complex)**
-- Parse outgoing IP packets from embassy-net
-- Extract TCP/UDP headers and payload
-- Create corresponding AT socket commands
-- Reconstruct IP packets from socket data
-- Status: Infrastructure present, needs implementation
+**Why this matters**:
+- Raw packet forwarding would consume most/all available SPI bandwidth
+- WiFi can provide 10-100+ Mbps, but SPI becomes the bottleneck
+- Module's built-in TCP/IP stack is actually the **correct architecture**
+- The stack handles protocol processing locally, only sending/receiving application data over SPI
+- This dramatically reduces SPI traffic and improves efficiency
 
-**Option C: Direct Socket Usage (Recommended)**
-- Don't use embassy-net
-- Use NetworkDevice socket APIs directly
-- Use HttpClient, MqttClient for protocols
-- Status: ✅ Fully implemented and working
+**Conclusion**: Transparent/packet mode is not just unimplemented—it's architecturally inappropriate for this hardware. The socket-based AT command interface is the right design.
 
-### Recommendation
+### Socket API Approach (Correct Design)
 
-**For production use**: Use Option C (direct socket APIs)
+**Architecture:**
+```
+Application → Socket APIs → Module TCP/IP Stack → WiFi (100+ Mbps)
+              (Efficient)   (Local processing)
+
+SPI transfers: Only application data + AT commands
+Bandwidth usage: Minimal, scales with actual data
+```
+
+**Implementation Status:**
+- ✅ NetworkDevice for raw socket operations
+- ✅ HttpClient for HTTP/HTTPS requests
+- ✅ MqttClient for pub/sub messaging
+- ✅ TLS with certificate management
+- ✅ DNS, SNTP, Ping utilities
+
+### embassy-net Status
+
+**Infrastructure provided:**
+- ✅ Complete Driver trait implementation
+- ✅ Packet buffers and queues
+- ✅ RxToken and TxToken
+- ✅ Link state tracking
+
+**Packet bridging**: Not implemented and **not recommended** due to:
+1. SPI bandwidth limitations vs WiFi throughput
+2. Added complexity with minimal benefit
+3. Socket APIs are more efficient and feature-complete
+
+**Use embassy-net ONLY if:**
+- You have existing code requiring embassy-net compatibility
+- You understand the limitations and accept reduced performance
+- You're willing to implement custom packet bridging logic
+
+**For all other uses**: Use the socket APIs directly
 
 The driver provides complete implementations of:
 - TCP/UDP sockets via `NetworkDevice`

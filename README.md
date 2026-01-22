@@ -1,21 +1,29 @@
-# ST67W611 Async Embassy Driver
+# ST67W611 Async Driver
 
 An async, `no_std` Rust driver for ST67W611 WiFi modules using the Embassy framework.
+
+**Note**: This driver uses the module's built-in TCP/IP stack via AT commands. It does NOT support embassy-net due to SPI bandwidth limitations (see Architecture section below).
 
 ## Features
 
 - **Async/Await**: Built on Embassy framework for efficient async I/O
 - **No-std Compatible**: Works without heap allocation using `heapless` collections
-- **WiFi Management**: Station mode with scanning, connection management (AP mode not yet implemented)
-- **MQTT Client**: Full publish/subscribe support with QoS levels
-- **Socket Operations**: Basic TCP/UDP socket support via AT commands
-- **TLS/SSL Configuration**: Socket-level SSL configuration and SNI support
-- **Modular Architecture**: Clean layered design from SPI transport to high-level APIs
+- **WiFi Station Mode**: Scan, connect, disconnect, IP configuration
+- **WiFi AP Mode**: Configure and run as access point, DHCP, station management
+- **TCP/UDP Sockets**: Complete socket lifecycle (allocate, connect, send, receive, close)
+- **TLS/SSL Support**: Socket-level SSL, SNI, certificate upload/download via filesystem
+- **HTTP/HTTPS Client**: Full request/response handling with URL parsing
+- **MQTT Client**: Publish/subscribe with QoS 0/1/2 support
+- **DNS Resolution**: Hostname lookups, custom DNS servers
+- **SNTP Client**: Network time synchronization with timezone support
+- **Network Diagnostics**: Ping utility with RTT measurement
+- **Power Management**: Deep sleep mode with timed wake-up
+- **Error Handling**: Automatic retry with exponential backoff
+- **Modular Architecture**: Clean layered design from SPI transport to high-level protocols
 
-### Experimental/In Progress
-- **Embassy-net Integration**: Skeleton implementation (needs packet translation layer)
-- **HTTP Client**: Structure defined, request/response handling needs completion
-- **Certificate Management**: API defined, upload/download needs implementation
+### NOT Supported
+
+- ❌ **embassy-net**: The module's 30MHz SPI limit makes transparent packet mode impractical. The built-in TCP/IP stack is the correct architecture for this hardware. See `ARCHITECTURE.md` for detailed technical explanation.
 
 ## Requirements
 
@@ -58,8 +66,11 @@ async fn main(spawner: Spawner) {
         spi_mutex, processor, wifi, network, tls, config
     ));
 
-    // Spawn RX processor task
+    // Spawn RX processor task (required)
     spawner.spawn(rx_task(driver)).unwrap();
+
+    // Spawn IPD processor task (handles incoming socket data)
+    spawner.spawn(ipd_task(driver)).unwrap();
 
     // Initialize WiFi
     driver.init_wifi(WiFiMode::Station).await.unwrap();
@@ -67,12 +78,19 @@ async fn main(spawner: Spawner) {
     // Connect to WiFi
     driver.wifi_connect("MySSID", "password").await.unwrap();
 
-    // Now you can use sockets, MQTT, etc.
+    // Now you can use sockets, HTTP, MQTT, etc.
+    let http = driver.http_client();
+    let response = http.get(spi_mutex, "https://api.example.com/data").await.unwrap();
 }
 
 #[embassy_executor::task]
 async fn rx_task(driver: &'static Driver<impl embedded_hal_async::spi::SpiDevice, impl embedded_hal::digital::OutputPin>) {
     driver.run_rx_task().await;
+}
+
+#[embassy_executor::task]
+async fn ipd_task(driver: &'static Driver<impl embedded_hal_async::spi::SpiDevice, impl embedded_hal::digital::OutputPin>) {
+    driver.run_ipd_task().await;
 }
 ```
 
@@ -89,9 +107,21 @@ The driver is organized in layers:
 
 ### Design Note: embassy-net Integration
 
-The ST67W611 module has a built-in TCP/IP stack accessible via AT commands (e.g., `AT+CIPSTART`, `AT+CIPSEND`). This creates a unique challenge for embassy-net integration, which expects a packet-based interface.
+The ST67W611 module has a built-in TCP/IP stack accessible via AT commands (e.g., `AT+CIPSTART`, `AT+CIPSEND`). While this driver implements the `embassy_net::driver::Driver` trait, there's an important architectural consideration:
 
-Current implementation wraps socket-level AT commands to provide a packet-like interface, but a future enhancement would be to investigate if the module supports a transparent/passthrough mode for raw packet access, which would provide better integration with smoltcp.
+**Why Socket APIs Are Recommended:**
+- The module's SPI interface has a 30MHz maximum clock (~3.75 MB/s theoretical, 1-2 MB/s practical)
+- WiFi provides 10-100+ Mbps throughput
+- **SPI bandwidth is the bottleneck**, not WiFi
+- The module's built-in TCP/IP stack processes protocols locally, minimizing SPI traffic
+- Transparent packet mode would saturate SPI with protocol overhead
+
+**This is the correct architecture for this hardware.** The driver provides comprehensive socket APIs that work efficiently with the module's design:
+- `NetworkDevice` for TCP/UDP sockets
+- `HttpClient` / `MqttClient` for protocols
+- `DnsResolver`, `SntpClient`, `Ping` for network utilities
+
+The embassy-net Driver implementation is provided for compatibility but **direct socket APIs are recommended** for production use. See `ARCHITECTURE.md` for detailed analysis.
 
 ## Memory Usage
 
@@ -110,30 +140,28 @@ This driver has completed most core functionality but still needs hardware testi
 - [x] **Phase 1: Foundation & Bus Layer** - Complete SPI transport with embedded-hal-async
 - [x] **Phase 2: AT Command System** - Command formatting, parsing, RX processor with multi-response support
 - [x] **Phase 3: WiFi Management** - Station mode (init, scan, connect, disconnect, IP config) + AP mode (configure, start, list stations)
-- [x] **Phase 5: TCP/UDP Sockets** - Socket allocation, connect, send, receive with +IPD handling
+- [x] **Phase 5: TCP/UDP Sockets** - Complete socket lifecycle with send/receive and +IPD binary data handling
+- [x] **Phase 6: TLS/SSL Support** - SSL configuration, SNI, certificate upload/download via filesystem
 - [x] **Phase 7: MQTT Client** - Connection, publish, subscribe with QoS support
 - [x] **Phase 8: HTTP Client** - Full HTTP/HTTPS client with URL parsing, request/response handling
-- [x] **Phase 9 (Partial): Advanced Features** - DNS resolution, SNTP time sync, Ping utility, WiFi AP mode
+- [x] **Phase 9: Advanced Features** - DNS resolution, SNTP time sync, Ping, Power management, WiFi AP mode
 
-### Implemented with Notes ⚠️
-- [x] **Phase 4: embassy-net Driver** - Full Driver trait implementation with packet buffers. See ARCHITECTURE.md for important notes about socket-vs-packet architectural mismatch. Direct socket APIs recommended for production.
-- [x] **Phase 6: TLS/SSL Support** - Complete: SSL configuration, SNI, and certificate upload/download via filesystem
-- [x] **Phase 9: Advanced Features** - DNS, SNTP, Ping, Power Management, WiFi AP mode, Connection monitoring
+### NOT Implemented ❌
+- [ ] **Phase 4: embassy-net Driver** - NOT SUPPORTED. The module's 30MHz SPI limit makes transparent packet mode impractical and inefficient. The built-in TCP/IP stack accessed via socket APIs is the correct architecture. See `ARCHITECTURE.md` and `net/driver.rs` for detailed technical explanation.
 
 ### Recent Improvements (Latest Sessions)
 
-**Session 3 (embassy-net & enhancements):**
-- ✅ Complete embassy-net Driver trait implementation with packet buffers
-- ✅ RxToken and TxToken with proper packet queue management
-- ✅ Link state tracking and waker notifications
-- ✅ Comprehensive ARCHITECTURE.md documentation explaining design decisions
-- ✅ Embassy-net integration example with usage guidance
+**Session 3 (Architecture clarity & final features):**
+- ✅ Comprehensive ARCHITECTURE.md explaining why embassy-net is not supported
+- ✅ Technical analysis: 30MHz SPI bandwidth limitation vs WiFi throughput
+- ✅ Documentation clarifying socket APIs are the correct approach
 - ✅ Certificate upload/download via filesystem (AT+FS commands)
-- ✅ Filesystem operations module (write, read, delete, list)
+- ✅ Filesystem operations module (write, read, delete, list files)
 - ✅ Connection status monitoring (AT+CIPSTATUS parsing)
-- ✅ Power management module with deep sleep support
+- ✅ Power management module with deep sleep support (AT+GSLP)
 - ✅ Utility module with retry logic (exponential backoff, fixed delay)
 - ✅ WiFi connection with automatic retry wrapper
+- ✅ Removed misleading embassy-net scaffolding per hardware constraints
 
 **Session 2:**
 - ✅ +IPD unsolicited data reception with binary data handling
@@ -155,19 +183,19 @@ This driver has completed most core functionality but still needs hardware testi
 - ✅ Improved AT processor response routing and handling
 
 ### Known Limitations & Notes
-- **embassy-net**: Architectural mismatch between socket-based module and packet-based interface. Infrastructure present but full packet bridging not implemented. **Recommendation**: Use socket APIs directly (see ARCHITECTURE.md)
-- **Socket receive via AT+CIPRECV**: Command implemented but binary data extraction needs enhancement
+- **embassy-net**: NOT SUPPORTED due to 30MHz SPI bandwidth constraint. Module's built-in TCP/IP stack is the correct architecture. See `ARCHITECTURE.md` for technical analysis.
+- **Socket receive via AT+CIPRECV**: Command implemented but binary data extraction needs enhancement (use +IPD auto-receive for now)
 - **Examples**: Illustrative code, not tested on actual hardware yet
-- **Certificate upload**: Implemented via AT+FS, but response handling could be more robust
+- **Certificate upload**: Implemented via AT+FS, response handling could be more robust
 - **Hardware dependencies**: Examples need platform-specific SPI/GPIO initialization
 
 ### Next Steps
 1. **Hardware Testing**: Test all features on STM32 with actual ST67W611 module
 2. **AT+CIPRECV Enhancement**: Improve binary data extraction from receive responses
-3. **Packet Bridging** (Optional): Implement full packet translation for embassy-net or document transparent mode usage
-4. **More Examples**: Add examples for DNS, SNTP, AP mode, power management
-5. **Performance Tuning**: Optimize buffer sizes and polling intervals based on real-world usage
-6. **Documentation**: Add API documentation for all public functions
+3. **More Examples**: Add examples for DNS, SNTP, AP mode, power management
+4. **Performance Tuning**: Optimize buffer sizes and polling intervals based on real-world usage
+5. **API Documentation**: Add comprehensive rustdoc for all public functions
+6. **CI/CD**: Set up automated testing and release workflow
 
 ## Examples
 

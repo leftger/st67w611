@@ -3,7 +3,7 @@ name = "st67w611-driver"
 version = "0.1.0"
 edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
-description = "Async no_std driver for ST67W611 WiFi modules using Embassy framework"
+description = "Async no_std driver for ST67W611 WiFi modules using Embassy framework (socket-based, not embassy-net)"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/yourusername/st67w611-driver"
 keywords = ["embedded", "wifi", "embassy", "async", "no-std"]
@@ -13,7 +13,6 @@ categories = ["embedded", "no-std", "network-programming"]
 embassy-executor = "0.7"
 embassy-time = "0.3"
 embassy-sync = "0.6"
-embassy-net = { version = "0.5", features = ["tcp", "udp", "dhcpv4"] }
 embassy-futures = "0.1"
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
@@ -30,7 +29,7 @@ embassy-executor = { version = "0.7", features = ["nightly", "arch-cortex-m", "e
 
 [features]
 default = []
-defmt = ["dep:defmt", "embassy-executor/defmt", "embassy-net/defmt", "embassy-sync/defmt", "embassy-time/defmt"]
+defmt = ["dep:defmt", "embassy-executor/defmt", "embassy-sync/defmt", "embassy-time/defmt"]
 log = ["dep:log"]
 
 [[example]]
@@ -47,10 +46,6 @@ required-features = []
 
 [[example]]
 name = "https_request"
-required-features = []
-
-[[example]]
-name = "embassy_net_integration"
 required-features = []
 
 [profile.release]

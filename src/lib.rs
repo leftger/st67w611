@@ -2,42 +2,55 @@
 //!
 //! An async, no_std driver for ST67W611 WiFi modules using the Embassy framework.
 //!
+//! This driver uses the module's built-in TCP/IP stack via AT commands over SPI.
+//! It does NOT support embassy-net due to SPI bandwidth limitations (see `ARCHITECTURE.md`).
+//!
 //! # Features
 //!
 //! - Async/await API using Embassy
 //! - No heap allocation (uses heapless collections)
 //! - WiFi connectivity (station and AP modes)
-//! - TCP/UDP sockets
-//! - TLS/SSL support
-//! - MQTT client
-//! - HTTP client
-//! - embassy-net integration
+//! - TCP/UDP sockets via built-in stack
+//! - TLS/SSL with certificate management
+//! - HTTP/HTTPS client
+//! - MQTT client with QoS
+//! - DNS, SNTP, Ping utilities
+//! - Power management
 //!
 //! # Example
 //!
 //! ```no_run
-//! use st67w611_driver::{Driver, Config};
+//! use st67w611_driver::{
+//!     at::processor::AtProcessor, bus::SpiTransport, Config, Driver,
+//!     NetworkDevice, TlsManager, WiFiManager, WiFiMode, SocketProtocol,
+//! };
 //! use embassy_executor::Spawner;
 //!
 //! #[embassy_executor::main]
 //! async fn main(spawner: Spawner) {
-//!     // Initialize SPI and GPIO
-//!     let spi = /* your SPI setup */;
-//!     let cs = /* your CS pin setup */;
+//!     // Create static resources (see examples for complete setup)
+//!     let driver = /* create driver with make_static! */;
 //!
-//!     // Create driver
-//!     let config = Config::default();
-//!     let driver = Driver::new(spi, cs, config);
+//!     // Spawn background tasks
+//!     spawner.spawn(rx_task(driver)).unwrap();
+//!     spawner.spawn(ipd_task(driver)).unwrap();
 //!
 //!     // Initialize WiFi
-//!     driver.init_wifi().await.unwrap();
+//!     driver.init_wifi(WiFiMode::Station).await.unwrap();
+//!     driver.wifi_connect("SSID", "password").await.unwrap();
 //!
-//!     // Connect to network
-//!     driver.wifi_connect("MySSID", "password").await.unwrap();
+//!     // Use HTTP client
+//!     let http = driver.http_client();
+//!     let response = http.get(spi, "https://api.example.com").await.unwrap();
 //!
-//!     // Use the driver...
+//!     // Or use sockets directly
+//!     let device = driver.network_device();
+//!     let socket = device.allocate_socket(SocketProtocol::Tcp).await.unwrap();
+//!     // ... use socket
 //! }
 //! ```
+//!
+//! See the `examples/` directory for complete working code.
 
 #![no_std]
 #![allow(async_fn_in_trait)]
@@ -72,7 +85,7 @@ use bus::SpiTransportAuto;
 use embassy_time::Duration as EmbassyDuration;
 use embedded_hal::digital::OutputPin;
 use embedded_hal_async::spi::SpiDevice;
-use net::{NetworkDevice, St67w611Driver};
+use net::NetworkDevice;
 use sync::TmMutex;
 use wifi::WiFiManager;
 
@@ -186,7 +199,7 @@ where
         self.wifi.get_state().await
     }
 
-    /// Get the network device (for embassy-net integration)
+    /// Get the network device for direct socket operations
     pub fn network_device(&self) -> &NetworkDevice {
         self.network
     }
@@ -252,19 +265,6 @@ where
         self.network.ipd_processor_task().await
     }
 
-    /// Create an embassy-net driver instance
-    ///
-    /// Note: The embassy-net driver has architectural limitations due to the module's
-    /// built-in TCP/IP stack. For most applications, using the socket APIs directly
-    /// (HttpClient, MqttClient, NetworkDevice) is recommended.
-    ///
-    /// See the documentation in `net::driver` for more details.
-    pub fn create_embassy_net_driver(
-        &self,
-        mac_address: MacAddress,
-    ) -> St67w611Driver {
-        St67w611Driver::new(self.network, mac_address)
-    }
 }
 
 /// Helper macro to create static resources
