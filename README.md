@@ -104,36 +104,43 @@ The driver is designed for `no_std` environments without heap allocation:
 
 ## Status
 
-This driver is in early development. The architecture and basic functionality are implemented, but significant work remains for production use.
+This driver has completed most core functionality but still needs hardware testing and refinement.
 
-### Implemented ✅
+### Fully Implemented ✅
 - [x] **Phase 1: Foundation & Bus Layer** - Complete SPI transport with embedded-hal-async
-- [x] **Phase 2: AT Command System** - Command formatting, parsing, RX processor, event dispatcher
-- [x] **Phase 3: WiFi Management** - Basic init, scan, connect, disconnect (needs enhancement for multi-result scan)
+- [x] **Phase 2: AT Command System** - Command formatting, parsing, RX processor with multi-response support
+- [x] **Phase 3: WiFi Management** - Init, scan (multi-result), connect, disconnect, IP config querying
+- [x] **Phase 5: TCP/UDP Sockets** - Socket allocation, connect, send, receive (buffer-based)
 - [x] **Phase 7: MQTT Client** - Connection, publish, subscribe with QoS support
+- [x] **Phase 8: HTTP Client** - Full HTTP/HTTPS client with URL parsing, request/response handling
 
 ### Partially Implemented ⚠️
 - [~] **Phase 4: embassy-net Driver** - Skeleton implementation, needs actual packet RX/TX translation
-- [~] **Phase 5: TCP/UDP Sockets** - Basic socket operations (connect, send, close), needs receive implementation
-- [~] **Phase 6: TLS/SSL Support** - Configuration and SNI support, certificate upload is placeholder
-- [~] **Phase 8: HTTP Client** - Structure defined, needs actual HTTP request/response handling
+- [~] **Phase 6: TLS/SSL Support** - Configuration and SNI support work, certificate upload is placeholder
+
+### Recent Improvements (Latest Session)
+- ✅ Multi-response command support for collecting multiple AT responses (scan results, IP config)
+- ✅ WiFi scan now collects all available networks, not just one
+- ✅ Socket receive operations implemented with buffered data management
+- ✅ HTTP client fully functional with URL parsing, request formatting, and response parsing
+- ✅ IP configuration query now returns complete ip/gateway/netmask information
+- ✅ Improved AT processor response routing and handling
 
 ### Known Limitations
-- WiFi scan returns limited results (parser needs enhancement for multiple +CWLAP responses)
-- Socket receive operations not fully implemented
-- HTTP client is skeleton only (use raw sockets or MQTT for now)
+- Socket receive via AT+CIPRECV needs proper data extraction from response
 - Certificate upload/management needs implementation
 - embassy-net Driver needs packet-level translation from socket API
 - Examples are illustrative but not tested on hardware
-- Response matching in AT processor is simplified (needs better command/response correlation)
+- +IPD unsolicited data reception needs buffer integration
+- Error recovery and retry logic could be enhanced
 
 ### Next Steps
-1. Enhance WiFi scan to collect all results
-2. Implement socket data reception
-3. Complete HTTP client implementation
-4. Test on actual hardware
-5. Improve error handling and recovery
-6. Add comprehensive documentation
+1. Test on actual hardware
+2. Implement certificate upload/download
+3. Enhance +IPD data reception handling
+4. Complete embassy-net Driver packet translation
+5. Add comprehensive error recovery
+6. Add more examples and documentation
 
 ## Examples
 

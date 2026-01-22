@@ -44,6 +44,10 @@ pub struct ResponseSlot {
     in_use: TmMutex<bool>,
     /// Signal for response delivery
     signal: TmSignal<Result<AtResponse>>,
+    /// Channel for collecting multiple data responses (e.g., scan results)
+    multi_response_channel: Channel<CriticalSectionRawMutex, AtResponse, 32>,
+    /// Whether this slot expects multiple responses
+    is_multi_response: TmMutex<bool>,
 }
 
 impl ResponseSlot {
@@ -52,6 +56,8 @@ impl ResponseSlot {
         Self {
             in_use: TmMutex::new(false),
             signal: Signal::new(),
+            multi_response_channel: Channel::new(),
+            is_multi_response: TmMutex::new(false),
         }
     }
 
@@ -70,6 +76,20 @@ impl ResponseSlot {
     pub async fn release(&self) {
         let mut in_use = self.in_use.lock().await;
         *in_use = false;
+        let mut is_multi = self.is_multi_response.lock().await;
+        *is_multi = false;
+    }
+
+    /// Enable multi-response mode for this slot
+    pub async fn enable_multi_response(&self) {
+        let mut is_multi = self.is_multi_response.lock().await;
+        *is_multi = true;
+    }
+
+    /// Check if multi-response mode is enabled
+    pub async fn is_multi_response_enabled(&self) -> bool {
+        let is_multi = self.is_multi_response.lock().await;
+        *is_multi
     }
 
     /// Wait for response with timeout
@@ -83,6 +103,21 @@ impl ResponseSlot {
     /// Signal a response
     pub fn signal(&self, response: Result<AtResponse>) {
         self.signal.signal(response);
+    }
+
+    /// Send a data response to the multi-response channel
+    pub fn send_data_response(&self, response: AtResponse) {
+        let _ = self.multi_response_channel.try_send(response);
+    }
+
+    /// Receive collected data responses
+    pub async fn receive_data_response(&self) -> AtResponse {
+        self.multi_response_channel.receive().await
+    }
+
+    /// Try to receive a data response without blocking
+    pub fn try_receive_data_response(&self) -> Option<AtResponse> {
+        self.multi_response_channel.try_receive().ok()
     }
 }
 
@@ -184,8 +219,56 @@ impl AtProcessor {
         result
     }
 
+    /// Send a command that expects multiple data responses before OK/ERROR
+    /// Returns a reference to the slot for collecting data responses
+    pub async fn send_multi_response_command<SPI, CS>(
+        &self,
+        spi: &TmMutex<SpiTransport<SPI, CS>>,
+        command: &[u8],
+    ) -> Result<(&ResponseSlot, usize)>
+    where
+        SPI: embedded_hal_async::spi::SpiDevice,
+        CS: embedded_hal::digital::OutputPin,
+    {
+        // Allocate a response slot
+        let slot = self.response_slots.allocate().await?;
+        let slot_idx = self.get_slot_index(slot);
+
+        // Enable multi-response mode
+        slot.enable_multi_response().await;
+
+        // Set as active slot
+        {
+            let mut active = self.active_slot.lock().await;
+            *active = Some(slot_idx);
+        }
+
+        // Send command over SPI
+        {
+            let mut spi_guard = spi.lock().await;
+            spi_guard.write(command).await?;
+        }
+
+        Ok((slot, slot_idx))
+    }
+
+    /// Release a multi-response slot after collecting all responses
+    pub async fn release_multi_response_slot(&self, slot_idx: usize) {
+        if slot_idx < self.response_slots.slots.len() {
+            let slot = &self.response_slots.slots[slot_idx];
+
+            // Clear active slot
+            {
+                let mut active = self.active_slot.lock().await;
+                *active = None;
+            }
+
+            slot.release().await;
+        }
+    }
+
     /// Process a received line
-    fn process_line(&self, line: &str) -> Result<()> {
+    async fn process_line(&self, line: &str) -> Result<()> {
         // Parse the line
         let response = match parser::parse_line(line)? {
             Some(r) => r,
@@ -199,14 +282,35 @@ impl AtProcessor {
             }
         }
 
-        // Otherwise, signal to the active response slot
-        // Note: In a real implementation, we'd need a way to match responses to specific commands
-        // For now, we signal the first waiting slot
-        for slot in &self.response_slots.slots {
-            // Try to signal (non-blocking check if slot is in use)
-            // This is a simplified version - real implementation needs better matching
-            slot.signal(Ok(response.clone()));
-            break;
+        // Get the active slot index
+        let active_slot_idx = {
+            let active = self.active_slot.lock().await;
+            *active
+        };
+
+        // If there's an active slot, route the response there
+        if let Some(idx) = active_slot_idx {
+            if idx < self.response_slots.slots.len() {
+                let slot = &self.response_slots.slots[idx];
+
+                // Check if this is a multi-response command
+                let is_multi = slot.is_multi_response_enabled().await;
+
+                match response {
+                    // For OK/ERROR responses, signal completion
+                    AtResponse::Ok | AtResponse::Error => {
+                        slot.signal(Ok(response));
+                    }
+                    // For Data responses in multi-response mode, send to channel
+                    AtResponse::Data { .. } if is_multi => {
+                        slot.send_data_response(response);
+                    }
+                    // For other responses, signal directly
+                    _ => {
+                        slot.signal(Ok(response));
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -290,7 +394,7 @@ impl AtProcessor {
             for &byte in &rx_buffer[..len] {
                 if byte == b'\n' {
                     // Process complete line
-                    let _ = self.process_line(line_buffer.as_str());
+                    let _ = self.process_line(line_buffer.as_str()).await;
                     line_buffer.clear();
                 } else if byte != b'\r' {
                     // Add to line buffer (skip CR)

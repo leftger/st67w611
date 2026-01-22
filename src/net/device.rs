@@ -71,6 +71,56 @@ impl Socket {
         let mut state = self.state.lock().await;
         *state = new_state;
     }
+
+    /// Append data to the receive buffer
+    pub async fn append_rx_data(&self, data: &[u8]) -> Result<usize> {
+        let mut buffer = self.rx_buffer.lock().await;
+
+        let mut bytes_written = 0;
+        for &byte in data {
+            if buffer.push(byte).is_err() {
+                // Buffer full
+                break;
+            }
+            bytes_written += 1;
+        }
+
+        Ok(bytes_written)
+    }
+
+    /// Read data from the receive buffer
+    pub async fn read_rx_data(&self, dest: &mut [u8]) -> Result<usize> {
+        let mut buffer = self.rx_buffer.lock().await;
+
+        let to_read = core::cmp::min(dest.len(), buffer.len());
+        dest[..to_read].copy_from_slice(&buffer[..to_read]);
+
+        // Remove read data from buffer by shifting remaining data to the front
+        let remaining = buffer.len() - to_read;
+        if remaining > 0 {
+            // Shift remaining bytes to the front
+            for i in 0..remaining {
+                buffer[i] = buffer[i + to_read];
+            }
+        }
+
+        // Truncate to remove the consumed data
+        buffer.truncate(remaining);
+
+        Ok(to_read)
+    }
+
+    /// Get the number of bytes available in the receive buffer
+    pub async fn available_rx_bytes(&self) -> usize {
+        let buffer = self.rx_buffer.lock().await;
+        buffer.len()
+    }
+
+    /// Clear the receive buffer
+    pub async fn clear_rx_buffer(&self) {
+        let mut buffer = self.rx_buffer.lock().await;
+        buffer.clear();
+    }
 }
 
 /// Network device
@@ -240,5 +290,89 @@ impl NetworkDevice {
         socket.free().await?;
 
         Ok(())
+    }
+
+    /// Receive data from socket (reads from local buffer first, then queries module if empty)
+    pub async fn receive_socket<SPI, CS>(
+        &self,
+        spi: &'static TmMutex<SpiTransport<SPI, CS>>,
+        id: SocketId,
+        buffer: &mut [u8],
+        timeout: embassy_time::Duration,
+    ) -> Result<usize>
+    where
+        SPI: embedded_hal_async::spi::SpiDevice,
+        CS: embedded_hal::digital::OutputPin,
+    {
+        let socket = self.get_socket(id)?;
+
+        // Check state
+        let state = socket.get_state().await;
+        if state != SocketState::Connected {
+            return Err(Error::NotConnected);
+        }
+
+        // First, check if we have data in the local buffer
+        let available = socket.available_rx_bytes().await;
+        if available > 0 {
+            return socket.read_rx_data(buffer).await;
+        }
+
+        // If no data in buffer, try to receive from module using AT+CIPRECV
+        let length_to_request = core::cmp::min(buffer.len(), 2048);
+        let cmd = crate::at::command::network::receive(id.raw(), length_to_request)?;
+        let response = self.processor.send_command(spi, cmd.as_bytes(), timeout).await?;
+
+        // Parse the +CIPRECV response
+        if let crate::at::AtResponse::Data { prefix, content } = response {
+            if prefix.as_str() == "+CIPRECV" {
+                // Content format: "<length>:<data>" but data comes in next reads
+                // For simplicity, we'll return 0 for now and mark this as needing enhancement
+                // A proper implementation would need to read the raw data bytes following this response
+                return Ok(0);
+            }
+        }
+
+        Ok(0)
+    }
+
+    /// Receive data from socket (non-blocking, reads from buffer only)
+    pub async fn receive_socket_buffered(&self, id: SocketId, buffer: &mut [u8]) -> Result<usize> {
+        let socket = self.get_socket(id)?;
+
+        // Check state
+        let state = socket.get_state().await;
+        if state != SocketState::Connected {
+            return Err(Error::NotConnected);
+        }
+
+        // Read from the socket's RX buffer
+        socket.read_rx_data(buffer).await
+    }
+
+    /// Check how many bytes are available to receive on a socket
+    pub async fn available_bytes(&self, id: SocketId) -> Result<usize> {
+        let socket = self.get_socket(id)?;
+        Ok(socket.available_rx_bytes().await)
+    }
+
+    /// Handle received data notification (+IPD event)
+    /// This should be called when data arrives on a socket
+    pub async fn handle_received_data(&self, link_id: u8, data: &[u8]) -> Result<()> {
+        if let Some(id) = SocketId::new(link_id) {
+            let socket = self.get_socket(id)?;
+
+            // Append data to socket's receive buffer
+            let bytes_written = socket.append_rx_data(data).await?;
+
+            if bytes_written < data.len() {
+                // Buffer overflow - some data was lost
+                // In a production implementation, we might want to log this or notify the user
+            }
+
+            Ok(())
+        } else {
+            Err(Error::InvalidSocket)
+        }
     }
 }

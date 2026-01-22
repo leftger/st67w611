@@ -197,6 +197,14 @@ pub mod network {
             .build()
     }
 
+    /// Receive data from connection (AT+CIPRECV)
+    pub fn receive(link_id: u8, length: usize) -> Result<AtCommandString> {
+        AtCommand::new("AT+CIPRECV")?
+            .with_int_param(link_id as i32)?
+            .with_int_param(length as i32)?
+            .build()
+    }
+
     /// Get connection status (AT+CIPSTATUS)
     pub fn get_status() -> Result<AtCommandString> {
         AtCommand::new("AT+CIPSTATUS")?.build()

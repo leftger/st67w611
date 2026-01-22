@@ -2,13 +2,99 @@
 
 use embassy_time::Duration;
 use heapless::{String, Vec};
+use core::fmt::Write as _;
 
 use crate::at::processor::AtProcessor;
 use crate::bus::SpiTransport;
 use crate::error::{Error, Result};
 use crate::net::device::NetworkDevice;
 use crate::sync::TmMutex;
-use crate::types::{SocketId, SocketProtocol};
+use crate::types::SocketProtocol;
+
+/// Parsed URL components
+#[derive(Debug, Clone)]
+pub struct ParsedUrl {
+    /// Scheme (http or https)
+    pub scheme: UrlScheme,
+    /// Host/domain name
+    pub host: String<128>,
+    /// Port number
+    pub port: u16,
+    /// Path (including query string)
+    pub path: String<128>,
+}
+
+/// URL scheme
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UrlScheme {
+    /// HTTP (unsecured)
+    Http,
+    /// HTTPS (TLS-secured)
+    Https,
+}
+
+impl UrlScheme {
+    /// Get default port for this scheme
+    pub const fn default_port(&self) -> u16 {
+        match self {
+            UrlScheme::Http => 80,
+            UrlScheme::Https => 443,
+        }
+    }
+
+    /// Get protocol type for socket
+    pub const fn socket_protocol(&self) -> SocketProtocol {
+        match self {
+            UrlScheme::Http => SocketProtocol::Tcp,
+            UrlScheme::Https => SocketProtocol::Ssl,
+        }
+    }
+}
+
+/// Parse a URL into components
+pub fn parse_url(url: &str) -> Result<ParsedUrl> {
+    let url = url.trim();
+
+    // Parse scheme
+    let (scheme, rest) = if url.starts_with("https://") {
+        (UrlScheme::Https, &url[8..])
+    } else if url.starts_with("http://") {
+        (UrlScheme::Http, &url[7..])
+    } else {
+        // Assume HTTP if no scheme
+        (UrlScheme::Http, url)
+    };
+
+    // Find the first slash to separate host from path
+    let (host_port, path_str) = if let Some(slash_pos) = rest.find('/') {
+        (&rest[..slash_pos], &rest[slash_pos..])
+    } else {
+        (rest, "/")
+    };
+
+    // Parse host and port
+    let (host_str, port) = if let Some(colon_pos) = host_port.find(':') {
+        let port_str = &host_port[colon_pos + 1..];
+        let port = port_str.parse::<u16>().map_err(|_| Error::InvalidParameter)?;
+        (&host_port[..colon_pos], port)
+    } else {
+        (host_port, scheme.default_port())
+    };
+
+    // Build result
+    let mut host = String::new();
+    host.push_str(host_str).map_err(|_| Error::BufferTooSmall)?;
+
+    let mut path = String::new();
+    path.push_str(path_str).map_err(|_| Error::BufferTooSmall)?;
+
+    Ok(ParsedUrl {
+        scheme,
+        host,
+        port,
+        path,
+    })
+}
 
 /// Maximum URL length
 pub const MAX_URL_LEN: usize = 256;
@@ -148,24 +234,187 @@ impl HttpClient {
     /// Send an HTTP request
     pub async fn request<SPI, CS>(
         &self,
-        _spi: &'static TmMutex<SpiTransport<SPI, CS>>,
-        _request: &HttpRequest,
+        spi: &'static TmMutex<SpiTransport<SPI, CS>>,
+        request: &HttpRequest,
     ) -> Result<HttpResponse>
     where
         SPI: embedded_hal_async::spi::SpiDevice,
         CS: embedded_hal::digital::OutputPin,
     {
-        // TODO: Implement HTTP request/response handling
-        // This would involve:
-        // 1. Parse URL to get host, port, path
-        // 2. Allocate a socket
-        // 3. Connect to host
-        // 4. Format and send HTTP request
-        // 5. Receive and parse HTTP response
-        // 6. Close socket
-        // 7. Return parsed response
+        // Parse URL
+        let parsed = parse_url(&request.url)?;
 
-        Err(Error::NotSupported)
+        // Allocate a socket
+        let socket_id = self.device.allocate_socket(parsed.scheme.socket_protocol()).await?;
+
+        // Connect to the server
+        self.device
+            .connect_socket(spi, socket_id, &parsed.host, parsed.port, self.timeout)
+            .await
+            .map_err(|e| {
+                // Make sure to free the socket on error
+                let _ = self.device.free_socket(socket_id);
+                e
+            })?;
+
+        // Format HTTP request
+        let mut request_str = String::<1024>::new();
+
+        // Request line: METHOD /path HTTP/1.1
+        write!(
+            &mut request_str,
+            "{} {} HTTP/1.1\r\n",
+            request.method.as_str(),
+            parsed.path.as_str()
+        )
+        .map_err(|_| Error::BufferTooSmall)?;
+
+        // Host header (required for HTTP/1.1)
+        write!(&mut request_str, "Host: {}\r\n", parsed.host.as_str())
+            .map_err(|_| Error::BufferTooSmall)?;
+
+        // User headers
+        for header in &request.headers {
+            write!(
+                &mut request_str,
+                "{}: {}\r\n",
+                header.name.as_str(),
+                header.value.as_str()
+            )
+            .map_err(|_| Error::BufferTooSmall)?;
+        }
+
+        // Content-Length if there's a body
+        if let Some(ref body) = request.body {
+            write!(&mut request_str, "Content-Length: {}\r\n", body.len())
+                .map_err(|_| Error::BufferTooSmall)?;
+        }
+
+        // End of headers
+        request_str
+            .push_str("\r\n")
+            .map_err(|_| Error::BufferTooSmall)?;
+
+        // Send headers
+        self.device
+            .send_socket(spi, socket_id, request_str.as_bytes(), self.timeout)
+            .await
+            .map_err(|e| {
+                let _ = self.device.close_socket(spi, socket_id, self.timeout);
+                e
+            })?;
+
+        // Send body if present
+        if let Some(ref body) = request.body {
+            self.device
+                .send_socket(spi, socket_id, body, self.timeout)
+                .await
+                .map_err(|e| {
+                    let _ = self.device.close_socket(spi, socket_id, self.timeout);
+                    e
+                })?;
+        }
+
+        // Receive and parse response
+        let mut response_buffer = [0u8; 2048];
+        let mut total_received = 0;
+
+        // Read response with timeout
+        let response_timeout = embassy_time::Instant::now() + self.timeout;
+
+        while embassy_time::Instant::now() < response_timeout && total_received < response_buffer.len() {
+            match self.device.receive_socket(spi, socket_id, &mut response_buffer[total_received..], Duration::from_millis(500)).await {
+                Ok(n) if n > 0 => {
+                    total_received += n;
+                    // For now, we'll assume we got the full response after one read
+                    // A proper implementation would check for Content-Length or chunked encoding
+                    break;
+                }
+                Ok(_) => {
+                    // No data yet, wait a bit
+                    embassy_time::Timer::after(Duration::from_millis(100)).await;
+                }
+                Err(_) => {
+                    break;
+                }
+            }
+        }
+
+        // Close the socket
+        let _ = self.device.close_socket(spi, socket_id, self.timeout).await;
+
+        // Parse HTTP response
+        self.parse_response(&response_buffer[..total_received])
+    }
+
+    /// Parse HTTP response
+    fn parse_response(&self, data: &[u8]) -> Result<HttpResponse> {
+        // Find the end of headers (\r\n\r\n)
+        let mut header_end = 0;
+        for i in 0..data.len().saturating_sub(3) {
+            if &data[i..i + 4] == b"\r\n\r\n" {
+                header_end = i + 4;
+                break;
+            }
+        }
+
+        if header_end == 0 {
+            return Err(Error::InvalidResponse);
+        }
+
+        // Parse status line and headers
+        let header_str = core::str::from_utf8(&data[..header_end])
+            .map_err(|_| Error::InvalidResponse)?;
+
+        let mut lines = header_str.lines();
+
+        // Parse status line (e.g., "HTTP/1.1 200 OK")
+        let status_line = lines.next().ok_or(Error::InvalidResponse)?;
+        let mut status_parts = status_line.split_whitespace();
+        status_parts.next(); // Skip HTTP version
+        let status_code_str = status_parts.next().ok_or(Error::InvalidResponse)?;
+        let status_code = status_code_str
+            .parse::<u16>()
+            .map_err(|_| Error::InvalidResponse)?;
+
+        // Parse headers
+        let mut headers = Vec::new();
+        for line in lines {
+            if line.is_empty() {
+                break;
+            }
+
+            if let Some(colon_pos) = line.find(':') {
+                let name_str = line[..colon_pos].trim();
+                let value_str = line[colon_pos + 1..].trim();
+
+                let mut name = String::new();
+                name.push_str(name_str).map_err(|_| Error::BufferTooSmall)?;
+
+                let mut value = String::new();
+                value.push_str(value_str).map_err(|_| Error::BufferTooSmall)?;
+
+                if headers.push(HttpHeader { name, value }).is_err() {
+                    // Too many headers, ignore rest
+                    break;
+                }
+            }
+        }
+
+        // Copy body
+        let mut body = Vec::new();
+        for &byte in &data[header_end..] {
+            if body.push(byte).is_err() {
+                // Body too large
+                break;
+            }
+        }
+
+        Ok(HttpResponse {
+            status_code,
+            headers,
+            body,
+        })
     }
 
     /// Perform a GET request
