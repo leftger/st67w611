@@ -78,7 +78,10 @@ impl PowerManager {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = command::system::deep_sleep(duration_ms)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if response == AtResponse::Ok {
             Ok(())
@@ -112,10 +115,7 @@ impl PowerManager {
     ///
     /// In practice, waking is typically done via hardware (GPIO toggle, SPI activity, etc.)
     /// This function is a placeholder for any software-based wake commands.
-    pub async fn wake<SPI, CS>(
-        &self,
-        _spi: &'static TmMutex<SpiTransport<SPI, CS>>,
-    ) -> Result<()>
+    pub async fn wake<SPI, CS>(&self, _spi: &'static TmMutex<SpiTransport<SPI, CS>>) -> Result<()>
     where
         SPI: embedded_hal_async::spi::SpiDevice,
         CS: embedded_hal::digital::OutputPin,

@@ -2,25 +2,39 @@
 //!
 //! An async, no_std driver for ST67W611 WiFi modules using the Embassy framework.
 //!
-//! This driver uses the module's built-in TCP/IP stack via AT commands over SPI.
-//! It does NOT support embassy-net due to SPI bandwidth limitations (see `ARCHITECTURE.md`).
+//! # Firmware Architectures
 //!
-//! # Features
+//! This driver supports two firmware architectures:
 //!
-//! - Async/await API using Embassy
-//! - No heap allocation (uses heapless collections)
+//! ## T01 Firmware (default, `mission-t01` feature)
+//!
+//! The TCP/IP stack runs on the ST67W611 module. The host communicates via
+//! AT commands for socket operations, HTTP, MQTT, etc.
+//!
+//! Features:
 //! - WiFi connectivity (station and AP modes)
-//! - TCP/UDP sockets via built-in stack
+//! - TCP/UDP sockets via AT commands
 //! - TLS/SSL with certificate management
 //! - HTTP/HTTPS client
 //! - MQTT client with QoS
 //! - DNS, SNTP, Ping utilities
 //! - Power management
 //!
-//! # Example
+//! ## T02 Firmware (`mission-t02` feature)
 //!
-//! ```no_run
-//! use st67w611_driver::{
+//! The TCP/IP stack runs on the host MCU using embassy-net. The module acts
+//! as a WiFi MAC/PHY only, passing raw Ethernet frames.
+//!
+//! Features:
+//! - embassy-net integration
+//! - Full control over TCP/IP stack
+//! - WiFi configuration via AT commands
+//! - Raw Ethernet frame transport
+//!
+//! # Example (T01 Firmware)
+//!
+//! ```no_run,ignore
+//! use st67w611::{
 //!     at::processor::AtProcessor, bus::SpiTransport, Config, Driver,
 //!     NetworkDevice, TlsManager, WiFiManager, WiFiMode, SocketProtocol,
 //! };
@@ -42,11 +56,26 @@
 //!     // Use HTTP client
 //!     let http = driver.http_client();
 //!     let response = http.get(spi, "https://api.example.com").await.unwrap();
+//! }
+//! ```
 //!
-//!     // Or use sockets directly
-//!     let device = driver.network_device();
-//!     let socket = device.allocate_socket(SocketProtocol::Tcp).await.unwrap();
-//!     // ... use socket
+//! # Example (T02 Firmware with embassy-net)
+//!
+//! ```no_run,ignore
+//! use st67w611::net::{new_driver, State, MTU};
+//! use embassy_net::{Stack, StackResources};
+//!
+//! #[embassy_executor::main]
+//! async fn main(spawner: Spawner) {
+//!     // Create driver state
+//!     let state = make_static!(State::<MTU, 4, 4>::new());
+//!     let (device, runner) = new_driver(spi, cs, state);
+//!
+//!     // Spawn the runner task
+//!     spawner.spawn(wifi_runner(runner)).unwrap();
+//!
+//!     // Use with embassy-net
+//!     let stack = Stack::new(device, config, resources, seed);
 //! }
 //! ```
 //!
@@ -59,56 +88,66 @@
 // Re-export embassy types that users need
 pub use embassy_time::Duration;
 
-// Module declarations
-pub mod advanced;
+// Module declarations - always available
 pub mod at;
 pub mod bus;
 pub mod config;
 pub mod error;
-pub mod http;
-pub mod mqtt;
 pub mod net;
-pub mod power;
 pub mod sync;
-pub mod tls;
 pub mod types;
 pub mod util;
 pub mod wifi;
+
+// T01-specific modules (AT command-based networking)
+#[cfg(feature = "mission-t01")]
+pub mod advanced;
+#[cfg(feature = "mission-t01")]
+pub mod http;
+#[cfg(feature = "mission-t01")]
+pub mod mqtt;
+#[cfg(feature = "mission-t01")]
+pub mod power;
+#[cfg(feature = "mission-t01")]
+pub mod tls;
 
 // Public API exports
 pub use config::Config;
 pub use error::{Error, Result};
 pub use types::*;
 
+// T01-specific imports (private, for use in Driver struct)
+#[cfg(feature = "mission-t01")]
 use at::processor::AtProcessor;
-use bus::SpiTransportAuto;
-use embassy_time::Duration as EmbassyDuration;
+#[cfg(feature = "mission-t01")]
 use embedded_hal::digital::OutputPin;
+#[cfg(feature = "mission-t01")]
 use embedded_hal_async::spi::SpiDevice;
-use net::NetworkDevice;
-use sync::TmMutex;
-use wifi::WiFiManager;
 
-/// Main driver instance
+/// Main driver instance (T01 firmware only)
+///
+/// For T02 firmware, use [`net::St67w611Device`] with embassy-net instead.
+#[cfg(feature = "mission-t01")]
 pub struct Driver<SPI, CS>
 where
     SPI: SpiDevice + 'static,
     CS: OutputPin + 'static,
 {
     /// SPI transport
-    spi: &'static TmMutex<SpiTransport<SPI, CS>>,
+    spi: &'static sync::TmMutex<SpiTransport<SPI, CS>>,
     /// AT processor
     processor: &'static AtProcessor,
     /// WiFi manager
-    wifi: &'static WiFiManager,
+    wifi: &'static wifi::WiFiManager,
     /// Network device
-    network: &'static NetworkDevice,
+    network: &'static net::NetworkDevice,
     /// TLS manager
     tls: &'static tls::TlsManager,
     /// Configuration
     config: Config,
 }
 
+#[cfg(feature = "mission-t01")]
 impl<SPI, CS> Driver<SPI, CS>
 where
     SPI: SpiDevice + 'static,
@@ -119,10 +158,10 @@ where
     /// Note: This function requires static references to be created by the user
     /// using `make_static!` or similar macros. See examples for details.
     pub fn new(
-        spi: &'static TmMutex<SpiTransport<SPI, CS>>,
+        spi: &'static sync::TmMutex<SpiTransport<SPI, CS>>,
         processor: &'static AtProcessor,
-        wifi: &'static WiFiManager,
-        network: &'static NetworkDevice,
+        wifi: &'static wifi::WiFiManager,
+        network: &'static net::NetworkDevice,
         tls: &'static tls::TlsManager,
         config: Config,
     ) -> Self {
@@ -241,7 +280,9 @@ where
 
     /// Get connection status for all sockets
     pub async fn get_connection_status(&self) -> Result<net::device::ConnectionStatus> {
-        self.network.get_connection_status(self.spi, self.config.command_timeout).await
+        self.network
+            .get_connection_status(self.spi, self.config.command_timeout)
+            .await
     }
 
     /// Get the AT processor for direct access
@@ -264,7 +305,6 @@ where
     pub async fn run_ipd_task(&'static self) {
         self.network.ipd_processor_task().await
     }
-
 }
 
 /// Helper macro to create static resources
@@ -288,6 +328,24 @@ macro_rules! make_static {
 // Re-export commonly used types
 pub use at::{AtCommand, AtResponse};
 pub use bus::SpiTransport;
+
+// T01-specific re-exports
+#[cfg(feature = "mission-t01")]
 pub use http::{HttpClient, HttpMethod, HttpRequest, HttpResponse};
+#[cfg(feature = "mission-t01")]
 pub use mqtt::{MqttClient, MqttConfig, MqttMessage};
+#[cfg(feature = "mission-t01")]
+pub use net::NetworkDevice;
+#[cfg(feature = "mission-t01")]
+pub use sync::TmMutex;
+#[cfg(feature = "mission-t01")]
 pub use tls::{CertificateType, TlsManager};
+#[cfg(feature = "mission-t01")]
+pub use wifi::WiFiManager;
+
+// T02-specific re-exports
+#[cfg(feature = "mission-t02")]
+pub use net::{
+    new_driver, Capabilities, Medium, PacketBuf, RxToken, SpiFrameHeader, St67w611Device,
+    St67w611Runner, St67w611Transport, State, TrafficType, TxToken, MTU,
+};

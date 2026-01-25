@@ -43,7 +43,10 @@ impl WiFiManager {
     {
         // Set WiFi mode
         let cmd = command::wifi::set_mode(mode)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if response != AtResponse::Ok {
             return Err(Error::AtCommandFailed);
@@ -70,7 +73,10 @@ impl WiFiManager {
         let cmd = command::wifi::scan()?;
 
         // Send as multi-response command
-        let (slot, slot_idx) = self.processor.send_multi_response_command(spi, cmd.as_bytes()).await?;
+        let (slot, slot_idx) = self
+            .processor
+            .send_multi_response_command(spi, cmd.as_bytes())
+            .await?;
 
         let mut results = ScanResults::new();
 
@@ -108,8 +114,10 @@ impl WiFiManager {
             // Check if we got OK or ERROR (scan complete)
             match embassy_time::with_timeout(
                 embassy_time::Duration::from_millis(100),
-                slot.wait(embassy_time::Duration::from_secs(30))
-            ).await {
+                slot.wait(embassy_time::Duration::from_secs(30)),
+            )
+            .await
+            {
                 Ok(Ok(AtResponse::Ok)) => {
                     // Scan complete successfully
                     break;
@@ -152,7 +160,10 @@ impl WiFiManager {
 
         // Send connect command
         let cmd = command::wifi::connect(ssid, password)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), Duration::from_secs(20)).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), Duration::from_secs(20))
+            .await?;
 
         if response != AtResponse::Ok {
             let mut state = self.state.lock().await;
@@ -196,7 +207,10 @@ impl WiFiManager {
         }
 
         let cmd = command::wifi::disconnect()?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if response != AtResponse::Ok {
             return Err(Error::AtCommandFailed);
@@ -222,7 +236,10 @@ impl WiFiManager {
         let cmd = command::wifi::get_station_ip()?;
 
         // Send as multi-response command
-        let (slot, slot_idx) = self.processor.send_multi_response_command(spi, cmd.as_bytes()).await?;
+        let (slot, slot_idx) = self
+            .processor
+            .send_multi_response_command(spi, cmd.as_bytes())
+            .await?;
 
         let mut ip = None;
         let mut gateway = None;
@@ -242,7 +259,9 @@ impl WiFiManager {
             if let Some(response) = slot.try_receive_data_response() {
                 if let AtResponse::Data { prefix, content } = response {
                     if prefix.as_str().starts_with("+CIPSTA") {
-                        if let Some((field, addr)) = parser::parse_ip_config_line(&prefix, &content)? {
+                        if let Some((field, addr)) =
+                            parser::parse_ip_config_line(&prefix, &content)?
+                        {
                             match field {
                                 parser::IpConfigField::Ip => ip = Some(addr),
                                 parser::IpConfigField::Gateway => gateway = Some(addr),
@@ -257,8 +276,10 @@ impl WiFiManager {
             // Check if we got OK or ERROR
             match embassy_time::with_timeout(
                 embassy_time::Duration::from_millis(100),
-                slot.wait(embassy_time::Duration::from_secs(5))
-            ).await {
+                slot.wait(embassy_time::Duration::from_secs(5)),
+            )
+            .await
+            {
                 Ok(Ok(AtResponse::Ok)) => {
                     // Query complete
                     break;
@@ -281,7 +302,11 @@ impl WiFiManager {
 
         // Build IpConfig from collected data
         match (ip, gateway, netmask) {
-            (Some(ip), Some(gateway), Some(netmask)) => Ok(IpConfig { ip, gateway, netmask }),
+            (Some(ip), Some(gateway), Some(netmask)) => Ok(IpConfig {
+                ip,
+                gateway,
+                netmask,
+            }),
             _ => Err(Error::InvalidResponse),
         }
     }
@@ -296,7 +321,10 @@ impl WiFiManager {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = command::wifi::get_mac()?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if let AtResponse::Data { prefix, content } = response {
             if prefix.as_str() == "+CIPSTAMAC" {
@@ -315,7 +343,15 @@ impl WiFiManager {
     }
 
     /// Wait for a specific WiFi event
-    async fn wait_for_event<F>(&self, channel: &embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, WiFiEvent, 4>, predicate: F) -> Result<()>
+    async fn wait_for_event<F>(
+        &self,
+        channel: &embassy_sync::channel::Channel<
+            embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+            WiFiEvent,
+            4,
+        >,
+        predicate: F,
+    ) -> Result<()>
     where
         F: Fn(&WiFiEvent) -> bool,
     {
@@ -353,7 +389,10 @@ impl WiFiManager {
             encryption,
         )?;
 
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if response != AtResponse::Ok {
             return Err(Error::AtCommandFailed);
@@ -372,7 +411,10 @@ impl WiFiManager {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = command::wifi::get_ap_config()?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if let AtResponse::Data { prefix, content } = response {
             if prefix.as_str() == "+CWSAP" {
@@ -385,7 +427,9 @@ impl WiFiManager {
 
                     let password_str = parser::unquote(&fields[1]);
                     let mut password = Password::new();
-                    password.push_str(password_str).map_err(|_| Error::ParseError)?;
+                    password
+                        .push_str(password_str)
+                        .map_err(|_| Error::ParseError)?;
 
                     let channel = parser::parse_int(&fields[2])? as u8;
                     let encryption = parser::parse_int(&fields[3])? as u8;
@@ -422,7 +466,10 @@ impl WiFiManager {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = command::wifi::list_stations()?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         let mut stations = heapless::Vec::new();
 
@@ -456,7 +503,10 @@ impl WiFiManager {
         };
 
         let cmd = command::wifi::set_dhcp(dhcp_mode, enable)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if response == AtResponse::Ok {
             Ok(())

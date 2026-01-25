@@ -1,8 +1,8 @@
 //! AT response parser
 
-use heapless::{String, Vec};
 use crate::error::{Error, Result};
 use crate::types::*;
+use heapless::{String, Vec};
 
 /// Maximum line length for parsing
 pub const MAX_LINE_LEN: usize = 512;
@@ -25,7 +25,10 @@ pub enum AtResponse {
     /// Ready prompt (">")
     ReadyPrompt,
     /// Data line with prefix and content
-    Data { prefix: LineBuffer, content: LineBuffer },
+    Data {
+        prefix: LineBuffer,
+        content: LineBuffer,
+    },
     /// Raw data
     Raw(LineBuffer),
     /// +IPD notification header (link_id, length)
@@ -59,10 +62,7 @@ pub fn parse_line(line: &str) -> Result<Option<AtResponse>> {
             let parts = parse_csv(params);
 
             if parts.len() >= 2 {
-                if let (Ok(link_id), Ok(length)) = (
-                    parse_int(&parts[0]),
-                    parse_int(&parts[1]),
-                ) {
+                if let (Ok(link_id), Ok(length)) = (parse_int(&parts[0]), parse_int(&parts[1])) {
                     return Ok(Some(AtResponse::IpdHeader {
                         link_id: link_id as u8,
                         length: length as usize,
@@ -79,10 +79,14 @@ pub fn parse_line(line: &str) -> Result<Option<AtResponse>> {
             let content = &trimmed[colon_pos + 1..].trim();
 
             let mut prefix_buf = LineBuffer::new();
-            prefix_buf.push_str(prefix).map_err(|_| Error::BufferTooSmall)?;
+            prefix_buf
+                .push_str(prefix)
+                .map_err(|_| Error::BufferTooSmall)?;
 
             let mut content_buf = LineBuffer::new();
-            content_buf.push_str(content).map_err(|_| Error::BufferTooSmall)?;
+            content_buf
+                .push_str(content)
+                .map_err(|_| Error::BufferTooSmall)?;
 
             return Ok(Some(AtResponse::Data {
                 prefix: prefix_buf,
@@ -93,7 +97,9 @@ pub fn parse_line(line: &str) -> Result<Option<AtResponse>> {
 
     // Raw data line
     let mut raw_buf = LineBuffer::new();
-    raw_buf.push_str(trimmed).map_err(|_| Error::BufferTooSmall)?;
+    raw_buf
+        .push_str(trimmed)
+        .map_err(|_| Error::BufferTooSmall)?;
     Ok(Some(AtResponse::Raw(raw_buf)))
 }
 
@@ -238,7 +244,10 @@ pub fn parse_scan_result(content: &str) -> Result<ScanResult> {
 /// Format: +CIPSTA:ip:"192.168.1.100"
 ///         +CIPSTA:gateway:"192.168.1.1"
 ///         +CIPSTA:netmask:"255.255.255.0"
-pub fn parse_ip_config_line(prefix: &str, content: &str) -> Result<Option<(IpConfigField, Ipv4Address)>> {
+pub fn parse_ip_config_line(
+    prefix: &str,
+    content: &str,
+) -> Result<Option<(IpConfigField, Ipv4Address)>> {
     let fields = parse_csv(content);
     if fields.is_empty() {
         return Ok(None);

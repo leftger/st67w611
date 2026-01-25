@@ -6,4 +6,4 @@ pub mod processor;
 
 pub use command::{AtCommand, AtCommandString};
 pub use parser::{AtResponse, LineBuffer};
-pub use processor::{AtProcessor, WiFiEvent, SocketEvent, ResponseSlot};
+pub use processor::{AtProcessor, ResponseSlot, SocketEvent, WiFiEvent};

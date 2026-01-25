@@ -1,8 +1,8 @@
 //! Network device abstraction
 
 use core::sync::atomic::{AtomicU8, Ordering};
-use embassy_sync::channel::Channel;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
 use heapless::Vec;
 
 use crate::at::processor::{AtProcessor, SocketEvent};
@@ -174,7 +174,8 @@ impl NetworkDevice {
 
     /// Set link state
     pub fn set_link_state(&self, up: bool) {
-        self.link_state.store(if up { 1 } else { 0 }, Ordering::Relaxed);
+        self.link_state
+            .store(if up { 1 } else { 0 }, Ordering::Relaxed);
     }
 
     /// Get link state
@@ -213,7 +214,10 @@ impl NetworkDevice {
 
         // Send connect command
         let cmd = crate::at::command::network::connect(id.raw(), protocol, host, port)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), timeout)
+            .await?;
 
         if response != crate::at::AtResponse::Ok {
             socket.set_state(SocketState::Allocated).await;
@@ -247,7 +251,10 @@ impl NetworkDevice {
 
         // Send length command
         let cmd = crate::at::command::network::send(id.raw(), data.len())?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), timeout)
+            .await?;
 
         // Wait for ready prompt ">"
         if response != crate::at::AtResponse::ReadyPrompt {
@@ -281,7 +288,10 @@ impl NetworkDevice {
         socket.set_state(SocketState::Closing).await;
 
         let cmd = crate::at::command::network::close(id.raw())?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), timeout)
+            .await?;
 
         if response != crate::at::AtResponse::Ok {
             return Err(Error::SocketError);
@@ -321,7 +331,10 @@ impl NetworkDevice {
         // If no data in buffer, try to receive from module using AT+CIPRECV
         let length_to_request = core::cmp::min(buffer.len(), 2048);
         let cmd = crate::at::command::network::receive(id.raw(), length_to_request)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), timeout)
+            .await?;
 
         // Parse the +CIPRECV response
         if let crate::at::AtResponse::Data { prefix, content } = response {
@@ -386,7 +399,9 @@ impl NetworkDevice {
             let ipd_data = ipd_channel.receive().await;
 
             // Route to appropriate socket buffer
-            let _ = self.handle_received_data(ipd_data.link_id, &ipd_data.data).await;
+            let _ = self
+                .handle_received_data(ipd_data.link_id, &ipd_data.data)
+                .await;
         }
     }
 
@@ -401,7 +416,10 @@ impl NetworkDevice {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = crate::at::command::network::get_status()?;
-        let (slot, slot_idx) = self.processor.send_multi_response_command(spi, cmd.as_bytes()).await?;
+        let (slot, slot_idx) = self
+            .processor
+            .send_multi_response_command(spi, cmd.as_bytes())
+            .await?;
 
         let mut status = ConnectionStatus::default();
 
@@ -428,8 +446,10 @@ impl NetworkDevice {
             // Check for completion
             match embassy_time::with_timeout(
                 embassy_time::Duration::from_millis(100),
-                slot.wait(timeout)
-            ).await {
+                slot.wait(timeout),
+            )
+            .await
+            {
                 Ok(Ok(crate::at::AtResponse::Ok)) => break,
                 Ok(Ok(crate::at::AtResponse::Error)) | Ok(Err(_)) => {
                     self.processor.release_multi_response_slot(slot_idx).await;

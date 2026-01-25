@@ -73,7 +73,10 @@ impl TlsManager {
 
             // Send write command
             let cmd = crate::at::command::filesystem::fs_write(filename, offset, chunk.len())?;
-            let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+            let response = self
+                .processor
+                .send_command(spi, cmd.as_bytes(), self.timeout)
+                .await?;
 
             // Wait for ready prompt ">"
             if response != crate::at::AtResponse::ReadyPrompt {
@@ -110,7 +113,10 @@ impl TlsManager {
         let filename = cert_type.filename();
 
         let cmd = crate::at::command::filesystem::fs_delete(filename)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         // OK or ERROR both acceptable (file may not exist)
         match response {
@@ -133,7 +139,10 @@ impl TlsManager {
         let filename = cert_type.filename();
 
         let cmd = crate::at::command::filesystem::fs_read(filename, 0, buffer.len())?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         // The response should contain the file data
         // Format varies - this is a simplified implementation
@@ -158,7 +167,10 @@ impl TlsManager {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = crate::at::command::network::configure_ssl(link_id, auth_mode)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if response != crate::at::AtResponse::Ok {
             return Err(Error::TlsError);
@@ -179,7 +191,10 @@ impl TlsManager {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = crate::at::command::network::set_sni(link_id, hostname)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if response != crate::at::AtResponse::Ok {
             return Err(Error::TlsError);

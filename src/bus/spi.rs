@@ -1,8 +1,8 @@
 //! SPI transport layer
 
-use embedded_hal_async::spi::SpiDevice;
+use embassy_time::{Duration, Timer};
 use embedded_hal::digital::OutputPin;
-use embassy_time::{Timer, Duration};
+use embedded_hal_async::spi::SpiDevice;
 
 use crate::error::{Error, Result};
 use crate::types::MAX_SPI_XFER;
@@ -73,7 +73,11 @@ where
         self.cs.set_low().map_err(|_| Error::Spi)?;
         Timer::after(Duration::from_micros(10)).await;
 
-        let result = self.spi.transfer(rx_buffer, tx_buffer).await.map_err(|_| Error::Spi);
+        let result = self
+            .spi
+            .transfer(rx_buffer, tx_buffer)
+            .await
+            .map_err(|_| Error::Spi);
 
         Timer::after(Duration::from_micros(10)).await;
         self.cs.set_high().map_err(|_| Error::Spi)?;
@@ -139,7 +143,10 @@ where
             return Err(Error::BufferTooSmall);
         }
 
-        self.spi.transfer(rx_buffer, tx_buffer).await.map_err(|_| Error::Spi)
+        self.spi
+            .transfer(rx_buffer, tx_buffer)
+            .await
+            .map_err(|_| Error::Spi)
     }
 
     /// Check if data is available

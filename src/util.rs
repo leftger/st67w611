@@ -1,7 +1,7 @@
 //! Utility functions and helpers
 
-use embassy_time::{Duration, Timer};
 use crate::error::Result;
+use embassy_time::{Duration, Timer};
 
 /// Retry a fallible async operation with exponential backoff
 ///
@@ -40,12 +40,10 @@ where
                 Timer::after(delay).await;
 
                 // Exponential backoff with cap
-                delay = Duration::from_millis(
-                    core::cmp::min(
-                        delay.as_millis() * 2,
-                        max_delay.as_millis()
-                    )
-                );
+                delay = Duration::from_millis(core::cmp::min(
+                    delay.as_millis() * 2,
+                    max_delay.as_millis(),
+                ));
             }
         }
     }

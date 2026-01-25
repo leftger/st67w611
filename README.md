@@ -2,126 +2,157 @@
 
 An async, `no_std` Rust driver for ST67W611 WiFi modules using the Embassy framework.
 
-**Note**: This driver uses the module's built-in TCP/IP stack via AT commands. It does NOT support embassy-net due to SPI bandwidth limitations (see Architecture section below).
-
 ## Features
 
 - **Async/Await**: Built on Embassy framework for efficient async I/O
 - **No-std Compatible**: Works without heap allocation using `heapless` collections
+- **Dual Firmware Support**: Works with both T01 and T02 firmware architectures
 - **WiFi Station Mode**: Scan, connect, disconnect, IP configuration
 - **WiFi AP Mode**: Configure and run as access point, DHCP, station management
-- **TCP/UDP Sockets**: Complete socket lifecycle (allocate, connect, send, receive, close)
-- **TLS/SSL Support**: Socket-level SSL, SNI, certificate upload/download via filesystem
-- **HTTP/HTTPS Client**: Full request/response handling with URL parsing
-- **MQTT Client**: Publish/subscribe with QoS 0/1/2 support
+- **TCP/UDP Sockets**: Complete socket lifecycle (T01 firmware)
+- **TLS/SSL Support**: Socket-level SSL, SNI, certificate management (T01 firmware)
+- **HTTP/HTTPS Client**: Full request/response handling (T01 firmware)
+- **MQTT Client**: Publish/subscribe with QoS 0/1/2 support (T01 firmware)
+- **embassy-net Integration**: Raw Ethernet frame transport (T02 firmware)
 - **DNS Resolution**: Hostname lookups, custom DNS servers
-- **SNTP Client**: Network time synchronization with timezone support
-- **Network Diagnostics**: Ping utility with RTT measurement
+- **SNTP Client**: Network time synchronization
 - **Power Management**: Deep sleep mode with timed wake-up
-- **Error Handling**: Automatic retry with exponential backoff
-- **Modular Architecture**: Clean layered design from SPI transport to high-level protocols
 
-### NOT Supported
+## Firmware Architectures
 
-- ❌ **embassy-net**: The module's 30MHz SPI limit makes transparent packet mode impractical. The built-in TCP/IP stack is the correct architecture for this hardware. See `ARCHITECTURE.md` for detailed technical explanation.
+The ST67W611 module supports two firmware architectures:
 
-## Requirements
+### T01 Firmware (default)
 
-- Rust nightly (for Embassy)
-- STM32 microcontroller with SPI interface
-- ST67W611 WiFi module connected via SPI
+The TCP/IP stack runs **on the module**. The host communicates via AT commands for socket operations, HTTP, MQTT, etc.
 
-## Quick Start
+```bash
+cargo build --features "mission-t01,defmt" --release
+```
+
+### T02 Firmware
+
+The TCP/IP stack runs **on the host MCU** using embassy-net. The module acts as a WiFi MAC/PHY, passing raw Ethernet frames.
+
+```bash
+cargo build --features "mission-t02,defmt" --release
+```
+
+## Quick Start (T01 Firmware)
 
 ```rust
-use st67w611_driver::{
-    at::processor::AtProcessor, bus::SpiTransport, Config, Driver,
-    NetworkDevice, TlsManager, WiFiManager, WiFiMode,
-};
-use embassy_executor::Spawner;
-use embassy_time::Duration;
+use st67w611::bus::SpiTransportRdy;
+use embassy_sync::signal::Signal;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+
+// Static signals for RDY flow control
+static TXN_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static HDR_ACK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // Initialize SPI and CS pin (platform-specific)
+    // Initialize SPI and pins (platform-specific)
     let spi = /* your SPI setup */;
     let cs = /* your CS pin */;
 
-    // Create static resources
-    let spi_transport = st67w611_driver::make_static!(SpiTransport::new(spi, cs));
-    let spi_mutex = st67w611_driver::make_static!(
-        st67w611_driver::sync::TmMutex::new(spi_transport)
-    );
-    let processor = st67w611_driver::make_static!(AtProcessor::new());
-    let config = Config::default();
-    let wifi = st67w611_driver::make_static!(
-        WiFiManager::new(processor, config.command_timeout)
-    );
-    let network = st67w611_driver::make_static!(NetworkDevice::new(processor));
-    let tls = st67w611_driver::make_static!(
-        TlsManager::new(processor, config.command_timeout)
-    );
+    // Create SPI transport with RDY flow control
+    let mut transport = SpiTransportRdy::new(spi, cs, &TXN_READY, &HDR_ACK);
 
-    let driver = st67w611_driver::make_static!(Driver::new(
-        spi_mutex, processor, wifi, network, tls, config
-    ));
+    // Send AT command
+    transport.write(b"AT+CWMODE=1\r\n").await.unwrap();
 
-    // Spawn RX processor task (required)
-    spawner.spawn(rx_task(driver)).unwrap();
-
-    // Spawn IPD processor task (handles incoming socket data)
-    spawner.spawn(ipd_task(driver)).unwrap();
-
-    // Initialize WiFi
-    driver.init_wifi(WiFiMode::Station).await.unwrap();
-
-    // Connect to WiFi
-    driver.wifi_connect("MySSID", "password").await.unwrap();
-
-    // Now you can use sockets, HTTP, MQTT, etc.
-    let http = driver.http_client();
-    let response = http.get(spi_mutex, "https://api.example.com/data").await.unwrap();
+    // Read response
+    let mut buf = [0u8; 256];
+    let len = transport.read(&mut buf).await.unwrap();
 }
+```
 
-#[embassy_executor::task]
-async fn rx_task(driver: &'static Driver<impl embedded_hal_async::spi::SpiDevice, impl embedded_hal::digital::OutputPin>) {
-    driver.run_rx_task().await;
-}
+## Quick Start (T02 Firmware with embassy-net)
 
-#[embassy_executor::task]
-async fn ipd_task(driver: &'static Driver<impl embedded_hal_async::spi::SpiDevice, impl embedded_hal::digital::OutputPin>) {
-    driver.run_ipd_task().await;
+```rust
+use st67w611::net::{new_driver, State, MTU};
+use embassy_net::StackResources;
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    // Initialize SPI and pins (platform-specific)
+    let spi = /* your SPI setup */;
+    let cs = /* your CS pin */;
+
+    // Create driver state and driver
+    let state = make_static!(State::<MTU, 4, 4>::new());
+    let (device, runner) = new_driver(spi, cs, state);
+
+    // Spawn the driver runner task
+    spawner.spawn(wifi_runner(runner)).unwrap();
+
+    // Create embassy-net stack
+    let stack_resources = make_static!(StackResources::<3>::new());
+    let (stack, stack_runner) = embassy_net::new(
+        device,
+        embassy_net::Config::dhcpv4(Default::default()),
+        stack_resources,
+        seed,
+    );
+
+    // WiFi association via AT commands, then use stack for TCP/IP
 }
 ```
 
 See the `examples/` directory for complete working examples.
 
+## Examples
+
+### Diagnostic Examples (work with both T01 and T02)
+
+- `stm32wba55_spi_diagnostic` - SPI frame protocol diagnostics
+- `stm32wba55_diagnostic_wifi_scan` - Simple WiFi scan without driver
+- `stm32wba55_minimal_test` - Basic SPI communication test
+- `stm32wba55_debug_rdy` - RDY pin debugging
+- `stm32wba55_firmware_programmer` - Firmware programming utility
+
+### T01 Examples
+
+- `stm32wba55_t01_wifi_scan` - WiFi scan using SpiTransportRdy
+- `stm32wba55_t01_wifi_test` - WiFi test with AT commands
+
+### T02 Examples
+
+- `stm32wba55_t02_embassy_net` - Embassy-net integration
+
+### Building Examples
+
+```bash
+# Diagnostic examples (no special features required)
+cargo build --example stm32wba55_spi_diagnostic --features defmt --release
+
+# T01 examples
+cargo build --example stm32wba55_t01_wifi_scan --features "mission-t01,defmt" --release
+
+# T02 examples
+cargo build --example stm32wba55_t02_embassy_net --features "mission-t02,defmt" --release
+```
+
 ## Architecture
 
 The driver is organized in layers:
 
-1. **Bus Layer** (`bus/`): SPI transport using `embedded-hal-async`
-2. **AT Command Layer** (`at/`): Command formatting, parsing, and RX processing
-3. **Network Device Layer** (`net/`): `embassy-net` Driver implementation
-4. **High-Level API Layer**: WiFi, TLS, MQTT, HTTP abstractions
+1. **Bus Layer** (`bus/`): SPI transport with RDY flow control
+2. **AT Command Layer** (`at/`): Command formatting and parsing
+3. **Network Layer** (`net/`): Socket API (T01) or embassy-net driver (T02)
+4. **Protocol Layer**: WiFi, TLS, MQTT, HTTP abstractions (T01)
 
-### Design Note: embassy-net Integration
+### SPI Frame Protocol
 
-The ST67W611 module has a built-in TCP/IP stack accessible via AT commands (e.g., `AT+CIPSTART`, `AT+CIPSEND`). While this driver implements the `embassy_net::driver::Driver` trait, there's an important architectural consideration:
+Both firmware types use an 8-byte header for SPI communication:
 
-**Why Socket APIs Are Recommended:**
-- The module's SPI interface has a 30MHz maximum clock (~3.75 MB/s theoretical, 1-2 MB/s practical)
-- WiFi provides 10-100+ Mbps throughput
-- **SPI bandwidth is the bottleneck**, not WiFi
-- The module's built-in TCP/IP stack processes protocols locally, minimizing SPI traffic
-- Transparent packet mode would saturate SPI with protocol overhead
-
-**This is the correct architecture for this hardware.** The driver provides comprehensive socket APIs that work efficiently with the module's design:
-- `NetworkDevice` for TCP/UDP sockets
-- `HttpClient` / `MqttClient` for protocols
-- `DnsResolver`, `SntpClient`, `Ping` for network utilities
-
-The embassy-net Driver implementation is provided for compatibility but **direct socket APIs are recommended** for production use. See `ARCHITECTURE.md` for detailed analysis.
+| Offset | Field   | Description                          |
+|--------|---------|--------------------------------------|
+| 0-1    | Magic   | 0x55AA                               |
+| 2-3    | Length  | Payload length (little-endian)       |
+| 4      | Flags   | Version, RX stall indicator          |
+| 5      | Type    | Traffic type (AT=0, STA=1, AP=2)     |
+| 6-7    | Reserved| Must be 0                            |
 
 ## Memory Usage
 
@@ -132,81 +163,12 @@ The driver is designed for `no_std` environments without heap allocation:
 - Configurable buffer sizes
 - Typical RAM usage: ~16KB (depends on configuration)
 
-## Status
+## Requirements
 
-This driver has completed most core functionality but still needs hardware testing and refinement.
-
-### Fully Implemented ✅
-- [x] **Phase 1: Foundation & Bus Layer** - Complete SPI transport with embedded-hal-async
-- [x] **Phase 2: AT Command System** - Command formatting, parsing, RX processor with multi-response support
-- [x] **Phase 3: WiFi Management** - Station mode (init, scan, connect, disconnect, IP config) + AP mode (configure, start, list stations)
-- [x] **Phase 5: TCP/UDP Sockets** - Complete socket lifecycle with send/receive and +IPD binary data handling
-- [x] **Phase 6: TLS/SSL Support** - SSL configuration, SNI, certificate upload/download via filesystem
-- [x] **Phase 7: MQTT Client** - Connection, publish, subscribe with QoS support
-- [x] **Phase 8: HTTP Client** - Full HTTP/HTTPS client with URL parsing, request/response handling
-- [x] **Phase 9: Advanced Features** - DNS resolution, SNTP time sync, Ping, Power management, WiFi AP mode
-
-### NOT Implemented ❌
-- [ ] **Phase 4: embassy-net Driver** - NOT SUPPORTED. The module's 30MHz SPI limit makes transparent packet mode impractical and inefficient. The built-in TCP/IP stack accessed via socket APIs is the correct architecture. See `ARCHITECTURE.md` and `net/driver.rs` for detailed technical explanation.
-
-### Recent Improvements (Latest Sessions)
-
-**Session 3 (Architecture clarity & final features):**
-- ✅ Comprehensive ARCHITECTURE.md explaining why embassy-net is not supported
-- ✅ Technical analysis: 30MHz SPI bandwidth limitation vs WiFi throughput
-- ✅ Documentation clarifying socket APIs are the correct approach
-- ✅ Certificate upload/download via filesystem (AT+FS commands)
-- ✅ Filesystem operations module (write, read, delete, list files)
-- ✅ Connection status monitoring (AT+CIPSTATUS parsing)
-- ✅ Power management module with deep sleep support (AT+GSLP)
-- ✅ Utility module with retry logic (exponential backoff, fixed delay)
-- ✅ WiFi connection with automatic retry wrapper
-- ✅ Removed misleading embassy-net scaffolding per hardware constraints
-
-**Session 2:**
-- ✅ +IPD unsolicited data reception with binary data handling
-- ✅ Background IPD processor task for automatic socket buffer filling
-- ✅ System configuration commands (AT+SYSSTORE, AT+RESTORE, AT+UART, etc.)
-- ✅ DNS resolution API with custom DNS server configuration
-- ✅ SNTP time synchronization client
-- ✅ Ping utility for network diagnostics
-- ✅ Complete WiFi AP mode support (configure, start, list connected stations)
-- ✅ DHCP configuration for both station and AP modes
-- ✅ New advanced networking module with DNS, SNTP, and Ping
-
-**Session 1:**
-- ✅ Multi-response command support for collecting multiple AT responses (scan results, IP config)
-- ✅ WiFi scan now collects all available networks, not just one
-- ✅ Socket receive operations implemented with buffered data management
-- ✅ HTTP client fully functional with URL parsing, request formatting, and response parsing
-- ✅ IP configuration query now returns complete ip/gateway/netmask information
-- ✅ Improved AT processor response routing and handling
-
-### Known Limitations & Notes
-- **embassy-net**: NOT SUPPORTED due to 30MHz SPI bandwidth constraint. Module's built-in TCP/IP stack is the correct architecture. See `ARCHITECTURE.md` for technical analysis.
-- **Socket receive via AT+CIPRECV**: Command implemented but binary data extraction needs enhancement (use +IPD auto-receive for now)
-- **Examples**: Illustrative code, not tested on actual hardware yet
-- **Certificate upload**: Implemented via AT+FS, response handling could be more robust
-- **Hardware dependencies**: Examples need platform-specific SPI/GPIO initialization
-
-### Next Steps
-1. **Hardware Testing**: Test all features on STM32 with actual ST67W611 module
-2. **AT+CIPRECV Enhancement**: Improve binary data extraction from receive responses
-3. **More Examples**: Add examples for DNS, SNTP, AP mode, power management
-4. **Performance Tuning**: Optimize buffer sizes and polling intervals based on real-world usage
-5. **API Documentation**: Add comprehensive rustdoc for all public functions
-6. **CI/CD**: Set up automated testing and release workflow
-
-## Examples
-
-See the `examples/` directory for example code (note: examples are illustrative and not yet tested on hardware):
-
-- `wifi_scan.rs` - Scan for available WiFi networks
-- `tcp_client.rs` - TCP client connection and data transfer
-- `mqtt_client.rs` - MQTT publish/subscribe with broker
-- `https_request.rs` - HTTPS GET request with TLS
-
-**Note**: These examples require platform-specific initialization code (SPI, GPIO setup) that you'll need to provide for your specific microcontroller.
+- Rust nightly (for Embassy)
+- STM32 microcontroller with SPI interface
+- ST67W611 WiFi module connected via SPI
+- T01 or T02 firmware flashed on the module
 
 ## License
 

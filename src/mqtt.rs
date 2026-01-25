@@ -109,14 +109,20 @@ impl MqttClient {
             password,
         )?;
 
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
         if response != crate::at::AtResponse::Ok {
             return Err(Error::MqttError);
         }
 
         // Connect to broker
         let cmd = crate::at::command::mqtt::connect(self.link_id, host, port, false)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), Duration::from_secs(30)).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), Duration::from_secs(30))
+            .await?;
 
         if response != crate::at::AtResponse::Ok {
             return Err(Error::MqttError);
@@ -148,7 +154,10 @@ impl MqttClient {
         drop(connected);
 
         let cmd = crate::at::command::mqtt::publish(self.link_id, topic, payload, qos, retain)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if response != crate::at::AtResponse::Ok {
             return Err(Error::MqttError);
@@ -175,7 +184,10 @@ impl MqttClient {
         drop(connected);
 
         let cmd = crate::at::command::mqtt::subscribe(self.link_id, topic, qos)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if response != crate::at::AtResponse::Ok {
             return Err(Error::MqttError);
@@ -201,7 +213,10 @@ impl MqttClient {
         drop(connected);
 
         let cmd = crate::at::command::mqtt::unsubscribe(self.link_id, topic)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if response != crate::at::AtResponse::Ok {
             return Err(Error::MqttError);
@@ -220,7 +235,10 @@ impl MqttClient {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = crate::at::command::mqtt::disconnect(self.link_id)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if response != crate::at::AtResponse::Ok {
             return Err(Error::MqttError);

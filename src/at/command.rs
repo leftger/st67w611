@@ -1,7 +1,7 @@
 //! AT command definitions and formatting
 
-use heapless::String;
 use core::fmt::Write as _;
+use heapless::String;
 
 use crate::error::{Error, Result};
 use crate::types::*;
@@ -29,7 +29,9 @@ impl AtCommand {
     /// Add a parameter to the command
     pub fn with_param(mut self, param: &str) -> Result<Self> {
         self.buffer.push(',').map_err(|_| Error::BufferTooSmall)?;
-        self.buffer.push_str(param).map_err(|_| Error::BufferTooSmall)?;
+        self.buffer
+            .push_str(param)
+            .map_err(|_| Error::BufferTooSmall)?;
         Ok(self)
     }
 
@@ -37,7 +39,9 @@ impl AtCommand {
     pub fn with_string_param(mut self, param: &str) -> Result<Self> {
         self.buffer.push(',').map_err(|_| Error::BufferTooSmall)?;
         self.buffer.push('"').map_err(|_| Error::BufferTooSmall)?;
-        self.buffer.push_str(param).map_err(|_| Error::BufferTooSmall)?;
+        self.buffer
+            .push_str(param)
+            .map_err(|_| Error::BufferTooSmall)?;
         self.buffer.push('"').map_err(|_| Error::BufferTooSmall)?;
         Ok(self)
     }
@@ -51,7 +55,9 @@ impl AtCommand {
 
     /// Finalize the command with CRLF
     pub fn build(mut self) -> Result<AtCommandString> {
-        self.buffer.push_str("\r\n").map_err(|_| Error::BufferTooSmall)?;
+        self.buffer
+            .push_str("\r\n")
+            .map_err(|_| Error::BufferTooSmall)?;
         Ok(self.buffer)
     }
 
@@ -102,7 +108,12 @@ pub mod system {
     }
 
     /// Set UART configuration (AT+UART_CUR)
-    pub fn set_uart(baudrate: u32, databits: u8, stopbits: u8, parity: u8) -> Result<AtCommandString> {
+    pub fn set_uart(
+        baudrate: u32,
+        databits: u8,
+        stopbits: u8,
+        parity: u8,
+    ) -> Result<AtCommandString> {
         AtCommand::new("AT+UART_CUR")?
             .with_int_param(baudrate as i32)?
             .with_int_param(databits as i32)?
@@ -165,17 +176,32 @@ pub mod wifi {
     }
 
     /// Set station IP (AT+CIPSTA)
-    pub fn set_station_ip(ip: &Ipv4Address, gateway: &Ipv4Address, netmask: &Ipv4Address) -> Result<AtCommandString> {
+    pub fn set_station_ip(
+        ip: &Ipv4Address,
+        gateway: &Ipv4Address,
+        netmask: &Ipv4Address,
+    ) -> Result<AtCommandString> {
         use core::fmt::Write;
 
         let mut ip_str = String::<16>::new();
-        write!(ip_str, "{}.{}.{}.{}", ip.0[0], ip.0[1], ip.0[2], ip.0[3]).map_err(|_| Error::BufferTooSmall)?;
+        write!(ip_str, "{}.{}.{}.{}", ip.0[0], ip.0[1], ip.0[2], ip.0[3])
+            .map_err(|_| Error::BufferTooSmall)?;
 
         let mut gw_str = String::<16>::new();
-        write!(gw_str, "{}.{}.{}.{}", gateway.0[0], gateway.0[1], gateway.0[2], gateway.0[3]).map_err(|_| Error::BufferTooSmall)?;
+        write!(
+            gw_str,
+            "{}.{}.{}.{}",
+            gateway.0[0], gateway.0[1], gateway.0[2], gateway.0[3]
+        )
+        .map_err(|_| Error::BufferTooSmall)?;
 
         let mut nm_str = String::<16>::new();
-        write!(nm_str, "{}.{}.{}.{}", netmask.0[0], netmask.0[1], netmask.0[2], netmask.0[3]).map_err(|_| Error::BufferTooSmall)?;
+        write!(
+            nm_str,
+            "{}.{}.{}.{}",
+            netmask.0[0], netmask.0[1], netmask.0[2], netmask.0[3]
+        )
+        .map_err(|_| Error::BufferTooSmall)?;
 
         AtCommand::new("AT+CIPSTA")?
             .with_string_param(&ip_str)?
@@ -199,7 +225,12 @@ pub mod wifi {
     /// password: AP password (8-63 chars for WPA/WPA2)
     /// channel: WiFi channel (1-13)
     /// encryption: 0=OPEN, 2=WPA_PSK, 3=WPA2_PSK, 4=WPA_WPA2_PSK
-    pub fn configure_ap(ssid: &str, password: &str, channel: u8, encryption: u8) -> Result<AtCommandString> {
+    pub fn configure_ap(
+        ssid: &str,
+        password: &str,
+        channel: u8,
+        encryption: u8,
+    ) -> Result<AtCommandString> {
         AtCommand::new("AT+CWSAP")?
             .with_string_param(ssid)?
             .with_string_param(password)?
@@ -219,17 +250,32 @@ pub mod wifi {
     }
 
     /// Set AP IP configuration (AT+CIPAP)
-    pub fn set_ap_ip(ip: &Ipv4Address, gateway: &Ipv4Address, netmask: &Ipv4Address) -> Result<AtCommandString> {
+    pub fn set_ap_ip(
+        ip: &Ipv4Address,
+        gateway: &Ipv4Address,
+        netmask: &Ipv4Address,
+    ) -> Result<AtCommandString> {
         use core::fmt::Write;
 
         let mut ip_str = String::<16>::new();
-        write!(ip_str, "{}.{}.{}.{}", ip.0[0], ip.0[1], ip.0[2], ip.0[3]).map_err(|_| Error::BufferTooSmall)?;
+        write!(ip_str, "{}.{}.{}.{}", ip.0[0], ip.0[1], ip.0[2], ip.0[3])
+            .map_err(|_| Error::BufferTooSmall)?;
 
         let mut gw_str = String::<16>::new();
-        write!(gw_str, "{}.{}.{}.{}", gateway.0[0], gateway.0[1], gateway.0[2], gateway.0[3]).map_err(|_| Error::BufferTooSmall)?;
+        write!(
+            gw_str,
+            "{}.{}.{}.{}",
+            gateway.0[0], gateway.0[1], gateway.0[2], gateway.0[3]
+        )
+        .map_err(|_| Error::BufferTooSmall)?;
 
         let mut nm_str = String::<16>::new();
-        write!(nm_str, "{}.{}.{}.{}", netmask.0[0], netmask.0[1], netmask.0[2], netmask.0[3]).map_err(|_| Error::BufferTooSmall)?;
+        write!(
+            nm_str,
+            "{}.{}.{}.{}",
+            netmask.0[0], netmask.0[1], netmask.0[2], netmask.0[3]
+        )
+        .map_err(|_| Error::BufferTooSmall)?;
 
         AtCommand::new("AT+CIPAP")?
             .with_string_param(&ip_str)?
@@ -259,7 +305,12 @@ pub mod network {
     use super::*;
 
     /// Start connection (AT+CIPSTART)
-    pub fn connect(link_id: u8, protocol: SocketProtocol, host: &str, port: u16) -> Result<AtCommandString> {
+    pub fn connect(
+        link_id: u8,
+        protocol: SocketProtocol,
+        host: &str,
+        port: u16,
+    ) -> Result<AtCommandString> {
         let proto = match protocol {
             SocketProtocol::Tcp => "TCP",
             SocketProtocol::Udp => "UDP",
@@ -366,9 +417,7 @@ pub mod network {
 
     /// Set ping timeout (AT+PING)
     pub fn ping(host: &str) -> Result<AtCommandString> {
-        AtCommand::new("AT+PING")?
-            .with_string_param(host)?
-            .build()
+        AtCommand::new("AT+PING")?.with_string_param(host)?.build()
     }
 }
 
@@ -450,7 +499,13 @@ pub mod mqtt {
     }
 
     /// Publish message (AT+MQTTPUB)
-    pub fn publish(link_id: u8, topic: &str, data: &str, qos: MqttQos, retain: bool) -> Result<AtCommandString> {
+    pub fn publish(
+        link_id: u8,
+        topic: &str,
+        data: &str,
+        qos: MqttQos,
+        retain: bool,
+    ) -> Result<AtCommandString> {
         AtCommand::new("AT+MQTTPUB")?
             .with_int_param(link_id as i32)?
             .with_string_param(topic)?

@@ -1,8 +1,8 @@
 //! HTTP client implementation
 
+use core::fmt::Write as _;
 use embassy_time::Duration;
 use heapless::{String, Vec};
-use core::fmt::Write as _;
 
 use crate::at::processor::AtProcessor;
 use crate::bus::SpiTransport;
@@ -75,7 +75,9 @@ pub fn parse_url(url: &str) -> Result<ParsedUrl> {
     // Parse host and port
     let (host_str, port) = if let Some(colon_pos) = host_port.find(':') {
         let port_str = &host_port[colon_pos + 1..];
-        let port = port_str.parse::<u16>().map_err(|_| Error::InvalidParameter)?;
+        let port = port_str
+            .parse::<u16>()
+            .map_err(|_| Error::InvalidParameter)?;
         (&host_port[..colon_pos], port)
     } else {
         (host_port, scheme.default_port())
@@ -174,7 +176,9 @@ impl HttpRequest {
         name_buf.push_str(name).map_err(|_| Error::BufferTooSmall)?;
 
         let mut value_buf = String::new();
-        value_buf.push_str(value).map_err(|_| Error::BufferTooSmall)?;
+        value_buf
+            .push_str(value)
+            .map_err(|_| Error::BufferTooSmall)?;
 
         self.headers
             .push(HttpHeader {
@@ -189,7 +193,9 @@ impl HttpRequest {
     /// Set the request body
     pub fn with_body(mut self, body: &[u8]) -> Result<Self> {
         let mut body_buf = Vec::new();
-        body_buf.extend_from_slice(body).map_err(|_| Error::BufferTooSmall)?;
+        body_buf
+            .extend_from_slice(body)
+            .map_err(|_| Error::BufferTooSmall)?;
         self.body = Some(body_buf);
         Ok(self)
     }
@@ -245,7 +251,10 @@ impl HttpClient {
         let parsed = parse_url(&request.url)?;
 
         // Allocate a socket
-        let socket_id = self.device.allocate_socket(parsed.scheme.socket_protocol()).await?;
+        let socket_id = self
+            .device
+            .allocate_socket(parsed.scheme.socket_protocol())
+            .await?;
 
         // Connect to the server
         self.device
@@ -322,8 +331,19 @@ impl HttpClient {
         // Read response with timeout
         let response_timeout = embassy_time::Instant::now() + self.timeout;
 
-        while embassy_time::Instant::now() < response_timeout && total_received < response_buffer.len() {
-            match self.device.receive_socket(spi, socket_id, &mut response_buffer[total_received..], Duration::from_millis(500)).await {
+        while embassy_time::Instant::now() < response_timeout
+            && total_received < response_buffer.len()
+        {
+            match self
+                .device
+                .receive_socket(
+                    spi,
+                    socket_id,
+                    &mut response_buffer[total_received..],
+                    Duration::from_millis(500),
+                )
+                .await
+            {
                 Ok(n) if n > 0 => {
                     total_received += n;
                     // For now, we'll assume we got the full response after one read
@@ -363,8 +383,8 @@ impl HttpClient {
         }
 
         // Parse status line and headers
-        let header_str = core::str::from_utf8(&data[..header_end])
-            .map_err(|_| Error::InvalidResponse)?;
+        let header_str =
+            core::str::from_utf8(&data[..header_end]).map_err(|_| Error::InvalidResponse)?;
 
         let mut lines = header_str.lines();
 
@@ -392,7 +412,9 @@ impl HttpClient {
                 name.push_str(name_str).map_err(|_| Error::BufferTooSmall)?;
 
                 let mut value = String::new();
-                value.push_str(value_str).map_err(|_| Error::BufferTooSmall)?;
+                value
+                    .push_str(value_str)
+                    .map_err(|_| Error::BufferTooSmall)?;
 
                 if headers.push(HttpHeader { name, value }).is_err() {
                     // Too many headers, ignore rest

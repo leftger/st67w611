@@ -1,1 +1,41 @@
-/target
+# Rust build artifacts
+/target/
+Cargo.lock
+**/*.rs.bk
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Embedded development
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+
+# Debug artifacts
+*.d
+*.o
+
+# JLink/probe-rs logs
+*.log
+RTT*.txt
+
+# Local configuration
+.cargo/
+
+# Claude Code session files
+.claude/
+
+# Documentation build
+/doc/
+
+# Coverage reports
+*.profraw
+*.profdata
+/coverage/

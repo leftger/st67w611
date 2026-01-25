@@ -41,7 +41,10 @@ impl DnsResolver {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = command::network::dns_lookup(hostname)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         // Parse response: +CIPDOMAIN:<ip>
         if let AtResponse::Data { prefix, content } = response {
@@ -66,7 +69,10 @@ impl DnsResolver {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = command::network::set_dns(true, primary, secondary)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if response == AtResponse::Ok {
             Ok(())
@@ -85,7 +91,10 @@ impl DnsResolver {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = command::network::get_dns()?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         // Parse response: +CIPDNS_CUR:<primary>[,<secondary>]
         if let AtResponse::Data { prefix, content } = response {
@@ -138,7 +147,10 @@ impl SntpClient {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = command::network::configure_sntp(enable, timezone, server)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         if response == AtResponse::Ok {
             Ok(())
@@ -157,14 +169,19 @@ impl SntpClient {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = command::network::get_sntp_time()?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), self.timeout).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), self.timeout)
+            .await?;
 
         // Parse response: +CIPSNTPTIME:<time_string>
         if let AtResponse::Data { prefix, content } = response {
             if prefix.as_str() == "+CIPSNTPTIME" {
                 let time_str = crate::at::parser::unquote(&content);
                 let mut result = String::new();
-                result.push_str(time_str).map_err(|_| Error::BufferTooSmall)?;
+                result
+                    .push_str(time_str)
+                    .map_err(|_| Error::BufferTooSmall)?;
                 return Ok(result);
             }
         }
@@ -208,7 +225,10 @@ impl Ping {
         CS: embedded_hal::digital::OutputPin,
     {
         let cmd = command::network::ping(host)?;
-        let response = self.processor.send_command(spi, cmd.as_bytes(), Duration::from_secs(10)).await?;
+        let response = self
+            .processor
+            .send_command(spi, cmd.as_bytes(), Duration::from_secs(10))
+            .await?;
 
         // Parse response: +PING:<time> or timeout
         if let AtResponse::Data { prefix, content } = response {

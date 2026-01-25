@@ -6,9 +6,9 @@ use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Timer};
 use heapless::Vec;
 
+use crate::at::parser::{self, AtResponse, LineBuffer, MAX_LINE_LEN};
 use crate::bus::SpiTransport;
 use crate::error::{Error, Result};
-use crate::at::parser::{self, AtResponse, LineBuffer, MAX_LINE_LEN};
 use crate::sync::{TmMutex, TmSignal};
 
 /// Maximum number of response slots for concurrent commands
@@ -284,7 +284,6 @@ impl AtProcessor {
         }
     }
 
-
     /// Handle unsolicited events
     fn handle_unsolicited_event(&self, prefix: &str, content: &str) -> bool {
         match prefix {
@@ -335,10 +334,8 @@ impl AtProcessor {
     }
 
     /// RX processor task - continuously reads from SPI and processes lines
-    pub async fn rx_task<SPI, CS>(
-        &'static self,
-        spi: &'static TmMutex<SpiTransport<SPI, CS>>,
-    ) where
+    pub async fn rx_task<SPI, CS>(&'static self, spi: &'static TmMutex<SpiTransport<SPI, CS>>)
+    where
         SPI: embedded_hal_async::spi::SpiDevice,
         CS: embedded_hal::digital::OutputPin,
     {
@@ -378,10 +375,7 @@ impl AtProcessor {
                     if new_remaining == 0 {
                         // We've read all the IPD data
                         let data = ipd_state.take().unwrap().2;
-                        let _ = self.ipd_data.try_send(IpdData {
-                            link_id,
-                            data,
-                        });
+                        let _ = self.ipd_data.try_send(IpdData { link_id, data });
                     } else {
                         // Update remaining count
                         ipd_state = Some((link_id, new_remaining, data_buf.clone()));
@@ -423,7 +417,11 @@ impl AtProcessor {
     /// Process a parsed response (extracted from process_line for reuse)
     async fn process_line_response(&self, response: AtResponse) -> Result<()> {
         // Check if this is an unsolicited event
-        if let AtResponse::Data { ref prefix, ref content } = response {
+        if let AtResponse::Data {
+            ref prefix,
+            ref content,
+        } = response
+        {
             if self.handle_unsolicited_event(prefix, content) {
                 return Ok(());
             }
