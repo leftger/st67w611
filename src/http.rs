@@ -111,12 +111,19 @@ pub const MAX_HEADER_LEN: usize = 128;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum HttpMethod {
+    /// HTTP GET method
     Get,
+    /// HTTP POST method
     Post,
+    /// HTTP PUT method
     Put,
+    /// HTTP DELETE method
     Delete,
+    /// HTTP HEAD method
     Head,
+    /// HTTP OPTIONS method
     Options,
+    /// HTTP PATCH method
     Patch,
 }
 
@@ -139,7 +146,9 @@ impl HttpMethod {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct HttpHeader {
+    /// Header name (e.g., "Content-Type")
     pub name: String<64>,
+    /// Header value (e.g., "application/json")
     pub value: String<64>,
 }
 
@@ -217,7 +226,8 @@ pub struct HttpResponse {
 pub struct HttpClient {
     /// Network device
     device: &'static NetworkDevice,
-    /// AT processor
+    /// AT processor (used for future direct AT command support)
+    #[allow(dead_code)]
     processor: &'static AtProcessor,
     /// Command timeout
     timeout: Duration,

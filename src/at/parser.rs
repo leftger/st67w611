@@ -26,14 +26,21 @@ pub enum AtResponse {
     ReadyPrompt,
     /// Data line with prefix and content
     Data {
+        /// Response prefix (e.g., "+CWLAP", "+CIPSTA")
         prefix: LineBuffer,
+        /// Response content after the prefix and colon
         content: LineBuffer,
     },
     /// Raw data
     Raw(LineBuffer),
     /// +IPD notification header (link_id, length)
     /// The actual data bytes follow this notification
-    IpdHeader { link_id: u8, length: usize },
+    IpdHeader {
+        /// Socket/link ID
+        link_id: u8,
+        /// Length of incoming data in bytes
+        length: usize,
+    },
 }
 
 /// Parse a single line of AT response
@@ -245,7 +252,7 @@ pub fn parse_scan_result(content: &str) -> Result<ScanResult> {
 ///         +CIPSTA:gateway:"192.168.1.1"
 ///         +CIPSTA:netmask:"255.255.255.0"
 pub fn parse_ip_config_line(
-    prefix: &str,
+    _prefix: &str,
     content: &str,
 ) -> Result<Option<(IpConfigField, Ipv4Address)>> {
     let fields = parse_csv(content);
@@ -274,8 +281,11 @@ pub fn parse_ip_config_line(
 /// IP config field type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpConfigField {
+    /// IP address field
     Ip,
+    /// Gateway address field
     Gateway,
+    /// Network mask field
     Netmask,
 }
 

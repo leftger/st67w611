@@ -805,7 +805,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "st67w611-driver"
+name = "st67w611"
 version = "0.1.0"
 dependencies = [
  "cortex-m",

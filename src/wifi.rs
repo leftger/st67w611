@@ -1,9 +1,8 @@
 //! WiFi management API
 
 use embassy_time::Duration;
-use heapless::Vec;
 
-use crate::at::command::{self, AtCommandString};
+use crate::at::command;
 use crate::at::parser::{self, AtResponse};
 use crate::at::processor::{AtProcessor, WiFiEvent};
 use crate::bus::SpiTransport;
@@ -471,7 +470,7 @@ impl WiFiManager {
             .send_command(spi, cmd.as_bytes(), self.timeout)
             .await?;
 
-        let mut stations = heapless::Vec::new();
+        let stations = heapless::Vec::new();
 
         // Parse station info (format varies by module version)
         // This is a simplified placeholder

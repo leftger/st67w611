@@ -4,9 +4,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Timer};
-use heapless::Vec;
 
-use crate::at::parser::{self, AtResponse, LineBuffer, MAX_LINE_LEN};
+use crate::at::parser::{self, AtResponse, LineBuffer};
 use crate::bus::SpiTransport;
 use crate::error::{Error, Result};
 use crate::sync::{TmMutex, TmSignal};
@@ -35,7 +34,12 @@ pub enum SocketEvent {
     /// Socket closed
     Closed(u8),
     /// Data received on socket (notification only, use receive to get data)
-    DataReceived { link_id: u8, length: usize },
+    DataReceived {
+        /// Socket/link ID
+        link_id: u8,
+        /// Number of bytes received
+        length: usize,
+    },
 }
 
 /// IPD data notification with actual data bytes

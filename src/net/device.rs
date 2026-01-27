@@ -337,7 +337,7 @@ impl NetworkDevice {
             .await?;
 
         // Parse the +CIPRECV response
-        if let crate::at::AtResponse::Data { prefix, content } = response {
+        if let crate::at::AtResponse::Data { prefix, content: _ } = response {
             if prefix.as_str() == "+CIPRECV" {
                 // Content format: "<length>:<data>" but data comes in next reads
                 // For simplicity, we'll return 0 for now and mark this as needing enhancement
@@ -421,7 +421,7 @@ impl NetworkDevice {
             .send_multi_response_command(spi, cmd.as_bytes())
             .await?;
 
-        let mut status = ConnectionStatus::default();
+        let status = ConnectionStatus::default();
 
         // Collect all status responses
         let status_timeout = embassy_time::Instant::now() + timeout;
@@ -434,7 +434,7 @@ impl NetworkDevice {
 
             // Try to receive a data response
             if let Some(response) = slot.try_receive_data_response() {
-                if let crate::at::AtResponse::Data { prefix, content: _ } = response {
+                if let crate::at::AtResponse::Data { prefix, content: _content } = response {
                     if prefix.as_str() == "STATUS" {
                         // Parse overall status
                         // Format varies - simplified for now

@@ -204,7 +204,8 @@ pub struct PingResult {
 pub struct Ping {
     /// AT processor
     processor: &'static AtProcessor,
-    /// Command timeout
+    /// Command timeout (used for future enhancements)
+    #[allow(dead_code)]
     timeout: Duration,
 }
 

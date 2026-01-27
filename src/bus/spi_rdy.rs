@@ -6,7 +6,7 @@
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Timer};
-use embedded_hal::digital::{InputPin, OutputPin};
+use embedded_hal::digital::OutputPin;
 use embedded_hal_async::spi::SpiBus;
 
 use crate::error::{Error, Result};
@@ -17,8 +17,6 @@ const SPI_HEADER_MAGIC: u16 = 0x55AA;
 /// Maximum SPI transfer size
 const MAX_SPI_XFER: usize = 2048;
 
-/// DMA threshold - transfers <= this use blocking, > this use DMA
-const DMA_THRESHOLD: usize = 8;
 
 /// ST67W611 SPI protocol header (8 bytes, little-endian)
 #[repr(C, packed)]
@@ -222,7 +220,7 @@ where
         let header = SpiHeader::from_bytes(&header_bytes);
 
         // Copy fields to avoid packed struct reference
-        let magic = header.magic;
+        let _magic = header.magic;
         let payload_len = header.len as usize;
 
         #[cfg(feature = "defmt")]
