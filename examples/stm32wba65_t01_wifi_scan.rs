@@ -48,10 +48,6 @@ bind_interrupts!(struct Irqs {
 static TXN_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static HDR_ACK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-use embassy_stm32::mode::Async;
-use embassy_stm32::spi::mode::Master;
-type SpiType = Spi<'static, Async, Master>;
-
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     info!("=== ST67W611 WiFi Scan (STM32WBA65RI, T01) ===");
@@ -78,8 +74,14 @@ async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(config);
     info!("MCU initialized (96 MHz)");
 
-    // CHIP_EN: start LOW, then assert HIGH to power the module
-    let mut chip_en = Output::new(p.PH3, Level::Low, Speed::Low);
+    // BOOT pin (PB13): LOW = AT/SPI mode, HIGH = UART bootloader
+    let _boot = Output::new(p.PB13, Level::Low, Speed::Low);
+
+    // WIFI_EN (PH3): antenna switch HIGH = ST67W611, LOW = WBA65 BLE
+    let _wifi_en = Output::new(p.PH3, Level::High, Speed::Low);
+
+    // CHIP_EN (PE0): start LOW, then assert HIGH to power the module
+    let mut chip_en = Output::new(p.PE0, Level::Low, Speed::Low);
     Timer::after(Duration::from_millis(10)).await;
     chip_en.set_high();
     info!("CHIP_EN HIGH — module powering up");

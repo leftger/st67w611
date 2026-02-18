@@ -47,9 +47,9 @@ async fn main(_spawner: Spawner) {
     // Configure control pins
     info!("Configuring control pins...");
     let mut boot_pin = Output::new(p.PB13, Level::Low, Speed::Low); // BOOT control
-    let mut chip_en = Output::new(p.PH3, Level::Low, Speed::Low); // CHIP_EN control
+    let mut chip_en = Output::new(p.PE0, Level::Low, Speed::Low); // CHIP_EN control
     info!("  BOOT (PB13): LOW");
-    info!("  CHIP_EN (PH3): LOW");
+    info!("  CHIP_EN (PE0): LOW");
 
     info!("");
     info!("=== ENTERING BOOTLOADER MODE ===");

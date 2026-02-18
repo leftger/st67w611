@@ -53,15 +53,19 @@ async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(config);
     info!("MCU initialized (96 MHz)");
 
-    // Configure BOOT pin (PB0): Set LOW for AT mode
-    info!("Configuring BOOT pin on PB0 (LOW=AT mode)...");
-    let _boot_pin = Output::new(p.PB0, Level::Low, Speed::Low);
+    // Configure BOOT pin (PB13): LOW = AT mode, HIGH = UART bootloader
+    info!("Configuring BOOT pin on PB13 (LOW=AT mode)...");
+    let _boot_pin = Output::new(p.PB13, Level::Low, Speed::Low);
     info!("BOOT pin set to LOW (AT mode)");
 
+    // WIFI_EN (PH3) - antenna switch: HIGH = ST67W611, LOW = WBA65 BLE
+    let _wifi_en = Output::new(p.PH3, Level::High, Speed::Low);
+    info!("WIFI_EN (PH3) HIGH — antenna routed to ST67W611");
+
     // Configure CHIP_EN with proper timing
-    info!("Configuring CHIP_EN (PH3)...");
+    info!("Configuring CHIP_EN (PE0)...");
     info!("  Starting with CHIP_EN = LOW");
-    let mut wifi_chip_enable = Output::new(p.PH3, Level::Low, Speed::Low);
+    let mut wifi_chip_enable = Output::new(p.PE0, Level::Low, Speed::Low);
 
     // Configure WIFI_RDY as input with EXTI
     info!("Configuring WIFI_RDY (PD8) with EXTI...");

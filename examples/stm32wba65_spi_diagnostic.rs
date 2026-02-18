@@ -72,12 +72,16 @@ async fn main(_spawner: Spawner) {
     // GPIO Setup
     // ═══════════════════════════════════════════════════════════════
 
-    // BOOT pin (PB0) - LOW for AT mode
-    let _boot = Output::new(p.PB0, Level::Low, Speed::Low);
-    info!("[OK] BOOT pin LOW (AT mode)");
+    // BOOT pin (PB13) - LOW for AT mode (HIGH = UART bootloader)
+    let _boot = Output::new(p.PB13, Level::Low, Speed::Low);
+    info!("[OK] BOOT pin (PB13) LOW (AT mode)");
 
-    // CHIP_EN (PH3)
-    let mut chip_en = Output::new(p.PH3, Level::Low, Speed::Low);
+    // WIFI_EN (PH3) - antenna switch: HIGH = ST67W611, LOW = WBA65 BLE
+    let _wifi_en = Output::new(p.PH3, Level::High, Speed::Low);
+    info!("[OK] WIFI_EN (PH3) HIGH (antenna -> ST67W611)");
+
+    // CHIP_EN (PE0)
+    let mut chip_en = Output::new(p.PE0, Level::Low, Speed::Low);
     info!("[..] CHIP_EN LOW, waiting 50ms...");
     Timer::after(Duration::from_millis(50)).await;
 
