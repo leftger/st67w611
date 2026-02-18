@@ -21,9 +21,9 @@ use embassy_stm32::{
 use embassy_time::{Duration, Timer};
 use {defmt_rtt as _, panic_probe as _};
 
-// Bind EXTI interrupt for WIFI_RDY (PB6 → EXTI6)
+// Bind EXTI interrupt for WIFI_RDY (PD8 → EXTI8)
 bind_interrupts!(struct Irqs {
-    EXTI6 => embassy_stm32::exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI6>;
+    EXTI8 => embassy_stm32::exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI8>;
 });
 
 #[embassy_executor::main]
@@ -59,13 +59,13 @@ async fn main(_spawner: Spawner) {
     info!("BOOT pin set to LOW (AT mode)");
 
     // Configure CHIP_EN with proper timing
-    info!("Configuring CHIP_EN (PB14)...");
+    info!("Configuring CHIP_EN (PH3)...");
     info!("  Starting with CHIP_EN = LOW");
-    let mut wifi_chip_enable = Output::new(p.PB14, Level::Low, Speed::Low);
+    let mut wifi_chip_enable = Output::new(p.PH3, Level::Low, Speed::Low);
 
     // Configure WIFI_RDY as input with EXTI
-    info!("Configuring WIFI_RDY (PB6) with EXTI...");
-    let mut wifi_rdy = ExtiInput::new(p.PB6, p.EXTI6, Pull::None, Irqs);
+    info!("Configuring WIFI_RDY (PD8) with EXTI...");
+    let wifi_rdy = ExtiInput::new(p.PD8, p.EXTI8, Pull::None, Irqs);
     info!("  Initial WIFI_RDY state: {}", wifi_rdy.is_high());
 
     // Wait required delay before enabling chip

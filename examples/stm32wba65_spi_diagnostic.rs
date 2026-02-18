@@ -76,19 +76,19 @@ async fn main(_spawner: Spawner) {
     let _boot = Output::new(p.PB0, Level::Low, Speed::Low);
     info!("[OK] BOOT pin LOW (AT mode)");
 
-    // CHIP_EN (PB14)
-    let mut chip_en = Output::new(p.PB14, Level::Low, Speed::Low);
+    // CHIP_EN (PH3)
+    let mut chip_en = Output::new(p.PH3, Level::Low, Speed::Low);
     info!("[..] CHIP_EN LOW, waiting 50ms...");
     Timer::after(Duration::from_millis(50)).await;
 
     chip_en.set_high();
     info!("[OK] CHIP_EN HIGH - module powering up");
 
-    // RDY pin (PB6) - input for monitoring (polling mode for simplicity)
-    let rdy = Input::new(p.PB6, Pull::None);
+    // RDY pin (PD8) - input for monitoring (polling mode for simplicity)
+    let rdy = Input::new(p.PD8, Pull::None);
 
-    // CS pin (PA12) - active HIGH for this module
-    let mut cs = Output::new(p.PA12, Level::Low, Speed::VeryHigh);
+    // CS pin (PD14) - active HIGH for this module
+    let mut cs = Output::new(p.PD14, Level::Low, Speed::VeryHigh);
 
     // SPI setup
     let mut spi_config = SpiConfig::default();
