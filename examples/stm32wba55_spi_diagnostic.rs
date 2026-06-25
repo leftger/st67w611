@@ -85,19 +85,19 @@ async fn main(_spawner: Spawner) {
     info!("[OK] CHIP_EN HIGH - module powering up");
 
     // RDY pin (PB6) - input for monitoring (polling mode for simplicity)
-    let rdy = Input::new(p.PB6, Pull::None);
+    let rdy = Input::new(p.PB13, Pull::None);
 
     // CS pin (PA12) - active HIGH for this module
-    let mut cs = Output::new(p.PA12, Level::Low, Speed::VeryHigh);
+    let mut cs = Output::new(p.PB9, Level::Low, Speed::VeryHigh);
 
     // SPI setup
     let mut spi_config = SpiConfig::default();
     spi_config.frequency = Hertz(10_000_000);
     let mut spi = Spi::new(
-        p.SPI1,
-        p.PB4,
-        p.PA15,
-        p.PB3,
+        p.SPI2,
+        p.PB10,
+        p.PC3,
+        p.PA9,
         p.GPDMA1_CH0,
         p.GPDMA1_CH1,
         spi_config,

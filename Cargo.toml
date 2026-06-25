@@ -30,7 +30,7 @@ embassy-net-driver = { version = "0.2.0", optional = true }
 
 [dev-dependencies]
 # STM32WBA55CG dependencies
-embassy-stm32 = { version = "0.5.0", features = ["defmt", "stm32wba55cg", "time-driver-any", "memory-x", "exti"] }
+embassy-stm32 = { version = "0.5.0", features = ["defmt", "stm32wba65ri", "time-driver-any", "memory-x", "exti"] }
 embassy-executor = { version = "0.9.0", features = ["arch-cortex-m", "executor-thread", "defmt"] }
 embassy-time = { version = "0.5.0", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
 embassy-sync = { version = "0.7.2", features = ["defmt"] }
