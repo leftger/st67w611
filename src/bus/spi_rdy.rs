@@ -220,7 +220,7 @@ where
         let header = SpiHeader::from_bytes(&header_bytes);
 
         // Copy fields to avoid packed struct reference
-        let _magic = header.magic;
+        let magic = header.magic;
         let payload_len = header.len as usize;
 
         #[cfg(feature = "defmt")]
