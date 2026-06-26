@@ -13,8 +13,8 @@
 //! # Build & Run
 //!
 //! ```bash
-//! cargo build --example stm32wba55_spi_diagnostic --features defmt --release
-//! probe-rs run --chip STM32WBA55CG --speed 4000 target/thumbv8m.main-none-eabihf/release/examples/stm32wba55_spi_diagnostic
+//! cd examples/stm32wba65
+//! cargo run --release --bin stm32wba65_spi_diagnostic
 //! ```
 
 #![no_std]

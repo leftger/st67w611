@@ -478,17 +478,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "embedded-hal-bus"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "513e0b3a8fb7d3013a8ae17a834283f170deaf7d0eeab0a7c1a36ad4dd356d22"
-dependencies = [
- "critical-section",
- "embedded-hal 1.0.0",
- "embedded-hal-async",
-]
-
-[[package]]
 name = "embedded-hal-nb"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -808,25 +797,18 @@ dependencies = [
 name = "st67w611"
 version = "0.1.0"
 dependencies = [
- "cortex-m",
- "cortex-m-rt",
  "defmt 1.0.1",
- "defmt-rtt",
  "embassy-executor",
  "embassy-futures",
- "embassy-net",
  "embassy-net-driver",
- "embassy-stm32",
  "embassy-sync",
  "embassy-time",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
- "embedded-hal-bus",
  "embedded-io 0.6.1",
  "embedded-io-async 0.6.1",
  "heapless 0.8.0",
  "log",
- "panic-probe",
  "static_cell",
 ]
 
@@ -869,6 +851,42 @@ dependencies = [
  "cortex-m",
  "cortex-m-rt",
  "defmt 0.3.100",
+]
+
+[[package]]
+name = "stm32wba55-examples"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt 1.0.1",
+ "defmt-rtt",
+ "embassy-executor",
+ "embassy-net",
+ "embassy-stm32",
+ "embassy-sync",
+ "embassy-time",
+ "panic-probe",
+ "st67w611",
+ "static_cell",
+]
+
+[[package]]
+name = "stm32wba65-examples"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt 1.0.1",
+ "defmt-rtt",
+ "embassy-executor",
+ "embassy-net",
+ "embassy-stm32",
+ "embassy-sync",
+ "embassy-time",
+ "panic-probe",
+ "st67w611",
+ "static_cell",
 ]
 
 [[package]]

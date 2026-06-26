@@ -1,0 +1,80 @@
+[package]
+name = "stm32wba65-examples"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Board-specific examples for the STM32WBA65RI.
+# All board/chip-specific configuration is isolated to this crate:
+#   - embassy-stm32 `stm32wba65ri` feature (below)
+#   - probe-rs `--chip STM32WBA65RI` runner (.cargo/config.toml)
+#
+# Pin mapping (differs from the WBA55 examples):
+#   BOOT     = PB0    CHIP_EN = PB14
+#   RDY      = PB13 (EXTI13)
+#   CS       = PB9  (active HIGH)
+#   SPI2: SCK = PB10, MOSI = PC3, MISO = PA9
+
+[dependencies]
+st67w611 = { path = "../..", default-features = false, features = ["defmt"] }
+
+embassy-executor = { version = "0.9.0", features = ["arch-cortex-m", "executor-thread", "defmt"] }
+embassy-time = { version = "0.5.0", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
+embassy-stm32 = { version = "0.5.0", features = ["defmt", "stm32wba65ri", "time-driver-any", "memory-x", "exti"] }
+embassy-sync = { version = "0.7.2", features = ["defmt"] }
+
+cortex-m = { version = "0.7.6", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7.0"
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+static_cell = "2"
+
+# T02 (embassy-net on host) only
+embassy-net = { version = "0.8.0", features = ["defmt", "tcp", "dhcpv4", "medium-ethernet"], optional = true }
+
+[features]
+default = ["mission-t01"]
+# T01: TCP/IP stack runs on the ST67W611 module (AT command sockets)
+mission-t01 = ["st67w611/mission-t01"]
+# T02: TCP/IP stack runs on the host MCU (embassy-net integration)
+mission-t02 = ["st67w611/mission-t02", "dep:embassy-net"]
+
+# --- Diagnostic programs (no firmware mission required) ---
+[[bin]]
+name = "stm32wba65_spi_diagnostic"
+path = "stm32wba65_spi_diagnostic.rs"
+
+[[bin]]
+name = "stm32wba65_diagnostic_wifi_scan"
+path = "stm32wba65_diagnostic_wifi_scan.rs"
+
+[[bin]]
+name = "stm32wba65_minimal_test"
+path = "stm32wba65_minimal_test.rs"
+
+[[bin]]
+name = "stm32wba65_debug_rdy"
+path = "stm32wba65_debug_rdy.rs"
+
+[[bin]]
+name = "stm32wba65_firmware_programmer"
+path = "stm32wba65_firmware_programmer.rs"
+
+# --- T01 programs (AT-command networking on the module) ---
+[[bin]]
+name = "stm32wba65_t01_wifi_scan"
+path = "stm32wba65_t01_wifi_scan.rs"
+required-features = ["mission-t01"]
+
+[[bin]]
+name = "stm32wba65_t01_wifi_test"
+path = "stm32wba65_t01_wifi_test.rs"
+required-features = ["mission-t01"]
+
+# --- T02 program (embassy-net on the host MCU) ---
+# Build with: cargo run --no-default-features --features mission-t02 --bin stm32wba65_t02_embassy_net
+[[bin]]
+name = "stm32wba65_t02_embassy_net"
+path = "stm32wba65_t02_embassy_net.rs"
+required-features = ["mission-t02"]
