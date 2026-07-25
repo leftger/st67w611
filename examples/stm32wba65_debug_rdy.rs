@@ -62,6 +62,11 @@ async fn main(_spawner: Spawner) {
     let _wifi_en = Output::new(p.PH3, Level::High, Speed::Low);
     info!("WIFI_EN (PH3) HIGH — antenna routed to ST67W611");
 
+    // CS (PD14): active HIGH — hold LOW before CHIP_EN goes HIGH so the
+    // ST67W611's SPI interface is idle during the module's boot sequence.
+    let _cs = Output::new(p.PD14, Level::Low, Speed::VeryHigh);
+    info!("CS (PD14) LOW — SPI idle during boot");
+
     // Configure CHIP_EN with proper timing
     info!("Configuring CHIP_EN (PE0)...");
     info!("  Starting with CHIP_EN = LOW");

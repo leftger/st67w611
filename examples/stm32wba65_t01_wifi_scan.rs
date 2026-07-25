@@ -80,14 +80,22 @@ async fn main(spawner: Spawner) {
     // WIFI_EN (PH3): antenna switch HIGH = ST67W611, LOW = WBA65 BLE
     let _wifi_en = Output::new(p.PH3, Level::High, Speed::Low);
 
-    // CHIP_EN (PE0): start LOW, then assert HIGH to power the module
+    // CS: PD14, active HIGH — hold LOW (inactive) BEFORE CHIP_EN goes HIGH.
+    // If CS is floating during boot the module's SPI interface is in an
+    // undefined state and it will never complete initialisation / assert RDY.
+    let cs = Output::new(p.PD14, Level::Low, Speed::VeryHigh);
+
+    // CHIP_EN (PE0): hold LOW long enough to fully power-cycle the module,
+    // then assert HIGH. 500 ms matches the firmware programmer's reset pulse
+    // and ensures any residual charge on the module dissipates completely.
     let mut chip_en = Output::new(p.PE0, Level::Low, Speed::Low);
-    Timer::after(Duration::from_millis(10)).await;
+    Timer::after(Duration::from_millis(500)).await;
     chip_en.set_high();
     info!("CHIP_EN HIGH — module powering up");
 
-    // Wait for module boot (T01 firmware typically ready within 1-2 s)
-    Timer::after(Duration::from_secs(2)).await;
+    // Wait for T01 firmware boot — allow up to 5 s in case the firmware
+    // needs extra time on first boot after a fresh flash.
+    Timer::after(Duration::from_secs(5)).await;
 
     // SPI1: CLK=PB4, MOSI=PA15, MISO=PB3 at 10 MHz
     let mut spi_config = SpiConfig::default();
@@ -101,9 +109,6 @@ async fn main(spawner: Spawner) {
         p.GPDMA1_CH1,
         spi_config,
     );
-
-    // CS: PD14, active HIGH — start LOW (inactive)
-    let cs = Output::new(p.PD14, Level::Low, Speed::VeryHigh);
 
     // WIFI_RDY: PD8 with EXTI8
     let wifi_rdy = ExtiInput::new(p.PD8, p.EXTI8, Pull::None, Irqs);

@@ -179,12 +179,7 @@ where
         // ── Step 2: Wait for slave TXN_READY (RDY rising edge) ───────────────
         // The slave detects CS HIGH and responds by raising RDY.
         // Timeout: 2000 ms — matches `SPI_WAIT_TXN_TIMEOUT_MS` in the reference.
-        match with_timeout(
-            Duration::from_millis(2000),
-            self.txn_ready_signal.wait(),
-        )
-        .await
-        {
+        match with_timeout(Duration::from_millis(2000), self.txn_ready_signal.wait()).await {
             Ok(()) => {}
             Err(_) => {
                 let _ = self.cs.set_low();
@@ -240,11 +235,7 @@ where
         // ── Step 6: Wait for header acknowledgment (RDY falling edge) ────────
         // Timeout: 100 ms — matches `SPI_WAIT_HDR_ACK_TIMEOUT_MS`.
         // Per reference: timeout here is non-fatal; we break if RDY is already LOW.
-        let _ = with_timeout(
-            Duration::from_millis(100),
-            self.hdr_ack_signal.wait(),
-        )
-        .await;
+        let _ = with_timeout(Duration::from_millis(100), self.hdr_ack_signal.wait()).await;
 
         // ── Step 7: Deassert CS ───────────────────────────────────────────────
         self.cs.set_low().map_err(|_| Error::Spi)?;
@@ -268,12 +259,9 @@ where
 
         // ── Step 1: Wait for slave TXN_READY ─────────────────────────────────
         // Signal may already be set if RDY is HIGH — wait() returns immediately.
-        with_timeout(
-            Duration::from_millis(2000),
-            self.txn_ready_signal.wait(),
-        )
-        .await
-        .map_err(|_| Error::Timeout)?;
+        with_timeout(Duration::from_millis(2000), self.txn_ready_signal.wait())
+            .await
+            .map_err(|_| Error::Timeout)?;
 
         // ── Step 2: Assert CS HIGH ────────────────────────────────────────────
         self.cs.set_high().map_err(|_| Error::Spi)?;
@@ -331,11 +319,7 @@ where
         };
 
         // ── Step 5: Wait for HDR_ACK ──────────────────────────────────────────
-        let _ = with_timeout(
-            Duration::from_millis(100),
-            self.hdr_ack_signal.wait(),
-        )
-        .await;
+        let _ = with_timeout(Duration::from_millis(100), self.hdr_ack_signal.wait()).await;
 
         // ── Step 6: Deassert CS ───────────────────────────────────────────────
         self.cs.set_low().map_err(|_| Error::Spi)?;

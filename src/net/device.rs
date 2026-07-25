@@ -434,7 +434,11 @@ impl NetworkDevice {
 
             // Try to receive a data response
             if let Some(response) = slot.try_receive_data_response() {
-                if let crate::at::AtResponse::Data { prefix, content: _content } = response {
+                if let crate::at::AtResponse::Data {
+                    prefix,
+                    content: _content,
+                } = response
+                {
                     if prefix.as_str() == "STATUS" {
                         // Parse overall status
                         // Format varies - simplified for now
