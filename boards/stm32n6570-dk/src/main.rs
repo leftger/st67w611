@@ -44,8 +44,8 @@ use embassy_time::{with_timeout, Duration, Instant, Timer};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-use embassy_net::iface::dhcpv4::DhcpConfig;
-use embassy_net::{Stack, StackStorage};
+// embassy-net is intentionally not imported: this experiment keeps the SPI link
+// AT-only, to test whether the stack's transmissions were confusing the module.
 
 use st67w611::bus::engine::{Engine, Outbound};
 use st67w611::bus::frame::MAX_PAYLOAD;
@@ -72,12 +72,6 @@ type CsPin = Output<'static>;
 /// Drives the SPI link: AT traffic and raw L2 frames share this one task.
 #[embassy_executor::task]
 async fn xarxa_task(runner: xarxa::Runner<'static, Spi5Bus, CsPin, N_RX, N_TX>) {
-    runner.run().await
-}
-
-/// Drives the embassy-net stack.
-#[embassy_executor::task]
-async fn net_task(mut runner: embassy_net::Runner<'static>) {
     runner.run().await
 }
 
@@ -324,17 +318,23 @@ async fn main(spawner: Spawner) {
 
     let mut engine = Engine::new(spi, cs, ready, hdr_ack, level);
 
-    // ---- Milestone B: T02 raw-L2 driver -> embassy-net ---------------------
+    // ---- Milestone B: T02 raw-L2 driver, AT commands only -------------------
     //
-    // The module reported `SW image:spi_wifi_lwip_onhost`, i.e. the TCP/IP stack
-    // runs here on the host — the T02 mission. So we hand the same SPI link to
-    // the xarxa driver and put embassy-net on top of it. If this brings up L2
-    // and gets a DHCP lease, the T02 conclusion is confirmed; if it does not,
-    // the module is really T01 and the AT-socket path is the right one.
+    // EXPERIMENT: embassy-net is deliberately NOT attached.
+    //
+    // The trace showed 312-byte transfers (8-byte header + a 304-byte,
+    // DHCP-sized payload) hitting the module over the same SPI link while it was
+    // still booting, because the embassy-net runner was transmitting. If that
+    // traffic is what confuses the module — and we do see it emit repeated
+    // "ready" banners, i.e. reboot — then removing the stack entirely should let
+    // it answer.
+    //
+    // So: driver, AT commands, nothing else. The WifiDevice is parked rather than
+    // attached, so the channel has no transmitter and the link carries AT traffic
+    // only. Milestone B takes it back once the AT path is solid.
     let (spi, cs) = engine.release();
 
     static XARXA: StaticCell<XarxaState<N_RX, N_TX>> = StaticCell::new();
-    static STACK: StaticCell<StackStorage> = StaticCell::new();
     static DEVICE: StaticCell<WifiDevice<'static>> = StaticCell::new();
 
     // Locally administered MAC — the module does not hand us its own.
@@ -351,13 +351,8 @@ async fn main(spawner: Spawner) {
     );
     spawner.spawn(unwrap!(xarxa_task(runner)));
 
-    // Fixed seed: this is a bring-up test, no entropy needed.
-    let (stack, net_runner) = Stack::new(STACK.init(StackStorage::new()), 0x0123_4567_89ab_cdef);
-    let iface = stack.add_iface_borrowed(DEVICE.init(device)).ok().unwrap();
-    if iface.set_dhcpv4(Some(DhcpConfig::default())).is_err() {
-        error!("set_dhcpv4 failed");
-    }
-    spawner.spawn(unwrap!(net_task(net_runner)));
+    // Park the device: alive, but with no stack attached to transmit through it.
+    let _device: &'static mut WifiDevice<'static> = DEVICE.init(device);
 
     // EXPERIMENT: the module clearly boots and prints "ready", but it takes
     // longer than we were allowing. So give it a generous settle, then find out
@@ -415,13 +410,9 @@ async fn main(spawner: Spawner) {
         Err(e) => error!("Wi-Fi join failed: {:?}", e),
     }
 
-    iface.wait_link_up().await;
-    info!("step: link up, waiting for DHCP lease ...");
-    iface.wait_config_up().await;
-    for ip in iface.ip_addrs().iter() {
-        info!("  ip: {:?}", defmt::Debug2Format(&ip.cidr));
-    }
-    info!("step: Milestone B up");
+    // No stack is attached in this experiment, so there is no link state or DHCP
+    // to wait on — the join result above is the whole verdict.
+    info!("step: AT-only experiment complete");
 
     loop {
         Timer::after_secs(30).await;
