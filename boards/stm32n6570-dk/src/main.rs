@@ -29,7 +29,7 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use defmt::{error, info};
+use defmt::{error, info, unwrap};
 use embassy_executor::Spawner;
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
@@ -44,13 +44,42 @@ use embassy_time::{with_timeout, Duration, Instant, Timer};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
+use embassy_net::iface::dhcpv4::DhcpConfig;
+use embassy_net::{Stack, StackStorage};
+
 use st67w611::bus::engine::{Engine, Outbound};
 use st67w611::bus::frame::MAX_PAYLOAD;
+use st67w611::net::xarxa::{self, State as XarxaState, WifiDevice};
+
+mod secrets;
 
 // RDY is on PE9 -> EXTI9.
 bind_interrupts!(struct Irqs {
     EXTI9 => embassy_stm32::exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI9>;
 });
+
+/// Size of the driver channel's RX/TX buffer pools.
+const N_RX: usize = 4;
+const N_TX: usize = 4;
+
+/// Concrete bus/pin types — needed to name the runner task, since
+/// `xarxa::Runner` is generic over the SPI bus and chip-select pin.
+type Spi5Bus = AsyncSpi<
+    embassy_stm32::spi::Spi<'static, embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>,
+>;
+type CsPin = Output<'static>;
+
+/// Drives the SPI link: AT traffic and raw L2 frames share this one task.
+#[embassy_executor::task]
+async fn xarxa_task(runner: xarxa::Runner<'static, Spi5Bus, CsPin, N_RX, N_TX>) {
+    runner.run().await
+}
+
+/// Drives the embassy-net stack.
+#[embassy_executor::task]
+async fn net_task(mut runner: embassy_net::Runner<'static>) {
+    runner.run().await
+}
 
 /// panic-probe 1.0 no longer registers `_defmt_panic` for you, so hook it up.
 #[defmt::panic_handler]
@@ -337,10 +366,65 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    // Idle. Milestone B (xarxa -> embassy-net -> DHCP) hangs off here once we
-    // know which firmware is on the module.
+    // ---- Milestone B: T02 raw-L2 driver -> embassy-net ---------------------
+    //
+    // The module reported `SW image:spi_wifi_lwip_onhost`, i.e. the TCP/IP stack
+    // runs here on the host — the T02 mission. So we hand the same SPI link to
+    // the xarxa driver and put embassy-net on top of it. If this brings up L2
+    // and gets a DHCP lease, the T02 conclusion is confirmed; if it does not,
+    // the module is really T01 and the AT-socket path is the right one.
+    let (spi, cs) = engine.release();
+
+    static XARXA: StaticCell<XarxaState<N_RX, N_TX>> = StaticCell::new();
+    static STACK: StaticCell<StackStorage> = StaticCell::new();
+    static DEVICE: StaticCell<WifiDevice<'static>> = StaticCell::new();
+
+    // Locally administered MAC — the module does not hand us its own.
+    const MAC: [u8; 6] = [0x02, 0x00, 0x5A, 0x67, 0x61, 0x01];
+
+    let (device, runner, control) = xarxa::new(
+        spi,
+        cs,
+        ready,
+        hdr_ack,
+        level,
+        XARXA.init(XarxaState::new()),
+        MAC,
+    );
+    spawner.spawn(unwrap!(xarxa_task(runner)));
+
+    // Fixed seed: this is a bring-up test, no entropy needed.
+    let (stack, net_runner) = Stack::new(STACK.init(StackStorage::new()), 0x0123_4567_89ab_cdef);
+    let iface = stack.add_iface_borrowed(DEVICE.init(device)).ok().unwrap();
+    if iface.set_dhcpv4(Some(DhcpConfig::default())).is_err() {
+        error!("set_dhcpv4 failed");
+    }
+    spawner.spawn(unwrap!(net_task(net_runner)));
+
+    // Station mode first. ST's driver always issues AT+CWMODE=1,0 before
+    // joining (w61_at_wifi.c), and the module rejects AT+CWJAP outright if it
+    // is left in another mode — which matches the instant ERROR we saw.
+    match control.at("AT+CWMODE=1,0").await {
+        Ok(out) => info!("step: station mode set (ok={})", out.is_ok()),
+        Err(e) => error!("set mode failed: {:?}", e),
+    }
+
+    info!("step: joining Wi-Fi (ssid={}) ...", secrets::WIFI_SSID);
+    match control.connect(secrets::WIFI_SSID, secrets::WIFI_PASSWORD).await {
+        Ok(()) => info!("step: Wi-Fi joined"),
+        Err(e) => error!("Wi-Fi join failed: {:?}", e),
+    }
+
+    iface.wait_link_up().await;
+    info!("step: link up, waiting for DHCP lease ...");
+    iface.wait_config_up().await;
+    for ip in iface.ip_addrs().iter() {
+        info!("  ip: {:?}", defmt::Debug2Format(&ip.cidr));
+    }
+    info!("step: Milestone B up");
+
     loop {
-        Timer::after_secs(10).await;
+        Timer::after_secs(30).await;
         info!("alive");
     }
 }

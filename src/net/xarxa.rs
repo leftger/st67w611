@@ -204,7 +204,7 @@ impl<'d> Control<'d> {
     pub async fn connect(&self, ssid: &str, password: &str) -> Result<()> {
         use core::fmt::Write as _;
         let mut cmd = heapless::String::<160>::new();
-        write!(cmd, "AT+CWJAP=\"{}\",\"{}\"", ssid, password).map_err(|_| Error::BufferTooSmall)?;
+        write!(cmd, "AT+CWJAP=\"{}\",\"{}\",", ssid, password).map_err(|_| Error::BufferTooSmall)?;
         self.check(&cmd).await?;
         self.state.set_link_state(LinkState::Up);
         Ok(())

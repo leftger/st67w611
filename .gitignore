@@ -51,3 +51,6 @@ docs/*.pdf
 *.profraw
 *.profdata
 /coverage/
+
+# Local Wi-Fi credentials for the board example.
+boards/*/src/secrets.rs

@@ -17,7 +17,7 @@
 //!     .arg_quoted("password").unwrap()
 //!     .build()
 //!     .unwrap();
-//! assert_eq!(cmd.as_str(), "AT+CWJAP=\"ssid\",\"password\"\r\n");
+//! assert_eq!(cmd.as_str(), "AT+CWJAP=\"ssid\",\"password\",\r\n");
 //! ```
 
 use core::fmt::Write as _;
@@ -306,6 +306,7 @@ pub mod wifi {
             .args()?
             .arg_quoted(ssid)?
             .arg_quoted(password)?
+            .suffix(",")?
             .build()
     }
 
@@ -1133,7 +1134,7 @@ mod tests {
 
     #[test]
     fn wifi_connect_includes_equals() {
-        assert_eq!(s(wifi::connect("myssid", "mypass")), "AT+CWJAP=\"myssid\",\"mypass\"\r\n");
+        assert_eq!(s(wifi::connect("myssid", "mypass")), "AT+CWJAP=\"myssid\",\"mypass\",\r\n");
     }
 
     #[test]

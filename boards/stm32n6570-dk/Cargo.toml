@@ -19,6 +19,9 @@ embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "63534
 embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
 embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["defmt"] }
 embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["defmt", "stm32n657x0", "time-driver-any", "exti"] }
+# The xarxa-based embassy-net the T02 driver plugs into. Must come from the same
+# rev as the embassy crates above.
+embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", default-features = false, features = ["medium-ethernet", "ipv4", "tcp", "udp", "dhcpv4"] }
 
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
