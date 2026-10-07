@@ -75,6 +75,25 @@ pub const MTU: usize = 1514;
 /// Longest AT command accepted by [`Control::at`].
 pub const AT_CMD_MAX: usize = 256;
 
+/// Joining an access point takes far longer than an ordinary command, so
+/// `AT+CWJAP` gets its own budget (ST's driver uses `W61_WIFI_TIMEOUT`).
+pub const WIFI_JOIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the pre-command drain waits for one stale frame before giving up.
+const DRAIN_TIMEOUT: Duration = Duration::from_millis(10);
+
+/// Most stale frames discarded before issuing a command.
+const DRAIN_MAX_FRAMES: usize = 8;
+
+/// A scan takes several seconds, so `AT+CWLAP` gets its own budget too.
+pub const SCAN_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The control side waits this much longer than the runner transaction budget,
+/// so the runner always gets to report its verdict first. If both sides expired
+/// together the caller would see a bare `Err(Timeout)` while the runner was
+/// still busy with that command, and the next command would then fail `Busy`.
+const RESPONSE_GRACE: Duration = Duration::from_secs(2);
+
 /// Data lines collected per AT transaction (re-exported from [`crate::at`]).
 pub use crate::at::reply::AT_LINES_MAX;
 
@@ -96,11 +115,16 @@ pub struct AtRequest {
     command: heapless::Vec<u8, AT_CMD_MAX>,
     /// Optional payload sent after the module's `>` prompt.
     payload: heapless::Vec<u8, AT_PAYLOAD_MAX>,
+    /// How long the runner waits for this command's terminal response.
+    ///
+    /// Per-request rather than global: joining an AP legitimately takes tens of
+    /// seconds, while an ordinary command should fail fast.
+    timeout: Duration,
 }
 
 impl AtRequest {
     /// A plain command; CRLF is appended.
-    fn command(cmd: &str) -> Result<Self> {
+    fn command(cmd: &str, timeout: Duration) -> Result<Self> {
         let mut command = heapless::Vec::new();
         command
             .extend_from_slice(cmd.as_bytes())
@@ -111,12 +135,13 @@ impl AtRequest {
         Ok(Self {
             command,
             payload: heapless::Vec::new(),
+            timeout,
         })
     }
 
     /// A command followed by a payload.
-    fn command_with_payload(cmd: &str, payload: &[u8]) -> Result<Self> {
-        let mut request = Self::command(cmd)?;
+    fn command_with_payload(cmd: &str, payload: &[u8], timeout: Duration) -> Result<Self> {
+        let mut request = Self::command(cmd, timeout)?;
         request
             .payload
             .extend_from_slice(payload)
@@ -175,23 +200,29 @@ impl<'d> Control<'d> {
     ///
     /// `cmd` is the command without a line ending; `\r\n` is appended.
     pub async fn at(&self, cmd: &str) -> Result<AtOutput> {
-        self.exchange(AtRequest::command(cmd)?).await
+        self.exchange(AtRequest::command(cmd, self.timeout)?).await
     }
 
     /// Send an AT command whose payload follows the module's `>` prompt.
     ///
     /// Used by `AT+OTASEND` (firmware update), `AT+BLEGATTSNTFY` and friends.
     pub async fn at_with_payload(&self, cmd: &str, payload: &[u8]) -> Result<AtOutput> {
-        self.exchange(AtRequest::command_with_payload(cmd, payload)?)
+        self.exchange(AtRequest::command_with_payload(cmd, payload, self.timeout)?)
             .await
     }
 
     async fn exchange(&self, request: AtRequest) -> Result<AtOutput> {
+        // The wait here must use the request's own budget, not the one-shot
+        // control timeout: `connect` asks for far longer than a plain command,
+        // and the runner would otherwise still be collecting a response that
+        // this side has already given up on.
+        let timeout = request.timeout;
+
         // Drop any stale response left by a previous timed-out transaction.
         self.at_resp.reset();
         self.at_req.try_send(request).map_err(|_| Error::Busy)?;
 
-        match with_timeout(self.timeout, self.at_resp.wait()).await {
+        match with_timeout(timeout + RESPONSE_GRACE, self.at_resp.wait()).await {
             Ok(out) => Ok(out),
             Err(_) => Err(Error::Timeout),
         }
@@ -205,7 +236,14 @@ impl<'d> Control<'d> {
         use core::fmt::Write as _;
         let mut cmd = heapless::String::<160>::new();
         write!(cmd, "AT+CWJAP=\"{}\",\"{}\",", ssid, password).map_err(|_| Error::BufferTooSmall)?;
-        self.check(&cmd).await?;
+        // Associating takes seconds; give it its own budget rather than the
+        // default command timeout.
+        let out = self
+            .exchange(AtRequest::command(&cmd, WIFI_JOIN_TIMEOUT)?)
+            .await?;
+        if !out.is_ok() {
+            return Err(Error::AtCommandFailed);
+        }
         self.state.set_link_state(LinkState::Up);
         Ok(())
     }
@@ -222,7 +260,7 @@ impl<'d> Control<'d> {
     /// The results are returned as raw information lines in
     /// [`AtOutput::lines`].
     pub async fn scan(&self) -> Result<AtOutput> {
-        self.at("AT+CWLAP").await
+        self.exchange(AtRequest::command("AT+CWLAP", SCAN_TIMEOUT)?).await
     }
 
     /// Enable or disable IPv6 on the station interface (`AT+CIPV6`).
@@ -409,6 +447,8 @@ where
         if self.at_buf.is_empty() {
             return;
         }
+        // Bring-up tracing: what the module actually said, line by line.
+        defmt::trace!("at line: |{}|", self.at_buf.as_str());
         if let Ok(Some(resp)) = parser::parse_line(&self.at_buf) {
             match resp {
                 AtResponse::Ok => self.at_status = Some(AtStatus::Ok),
@@ -424,18 +464,52 @@ where
         self.at_buf.clear();
     }
 
+    /// Read and discard frames the module queued before a command was issued.
+    ///
+    /// Ethernet frames are still delivered to the network stack — only AT
+    /// traffic is dropped. Bounded in both iterations and per-frame time so a
+    /// chatty or wedged module cannot stall the runner.
+    async fn drain_pending(&mut self) {
+        for _ in 0..DRAIN_MAX_FRAMES {
+            match with_timeout(DRAIN_TIMEOUT, self.engine.exchange(None, &mut self.rx)).await {
+                Ok(Ok(recv)) => {
+                    if recv.traffic_type() != Some(TrafficType::AtCommand) {
+                        // Keep delivering real network traffic.
+                        self.on_received(recv);
+                    }
+                }
+                // Nothing pending (or the read failed): the queue is as empty as
+                // we can make it.
+                _ => break,
+            }
+        }
+    }
+
     /// Run one AT transaction and collect its response.
     ///
     /// If the request carries a payload, it is sent once the module answers
     /// with the `>` prompt.
     async fn at_transaction(&mut self, request: AtRequest) {
-        let AtRequest { command, mut payload } = request;
+        let AtRequest {
+            command,
+            mut payload,
+            timeout,
+        } = request;
 
         self.at_lines.clear();
         self.at_status = None;
         self.at_prompt = false;
         self.at_buf.clear();
         self.at_active = true;
+
+        // Flush anything the module queued before we got here — its boot banner,
+        // unsolicited events, or the tail of a transaction that timed out.
+        //
+        // Without this those frames are consumed as *this* command's response,
+        // which shows up as every reply being offset by one, and can even make a
+        // stale OK terminate a transaction early so the real reply leaks into the
+        // next one.
+        self.drain_pending().await;
 
         // Send the command and dispatch anything that arrived with it.
         if let Ok(recv) = self
@@ -446,7 +520,7 @@ where
             self.on_received(recv);
         }
 
-        let deadline = Instant::now() + AT_TIMEOUT;
+        let deadline = Instant::now() + timeout;
         while self.at_status.is_none() {
             // A pending payload goes out as soon as the module prompts.
             if self.at_prompt && !payload.is_empty() {
@@ -469,10 +543,26 @@ where
             let remaining = deadline - now;
             match with_timeout(remaining, self.engine.exchange(None, &mut self.rx)).await {
                 Ok(Ok(recv)) => self.on_received(recv),
-                Ok(Err(_)) => break,
+                // A transient engine error — no RDY just now, or a malformed
+                // frame — must NOT abort the transaction. Breaking here meant a
+                // single glitch truncated the response and the command was then
+                // judged on whatever had arrived so far, usually nothing.
+                Ok(Err(_)) => Timer::after(Duration::from_millis(2)).await,
+                // The overall deadline elapsed.
                 Err(_) => break,
             }
         }
+
+        defmt::trace!(
+            "at transaction done: status={} lines={}",
+            match self.at_status {
+                Some(AtStatus::Ok) => "Ok",
+                Some(AtStatus::Error) => "Error",
+                Some(AtStatus::Timeout) => "Timeout",
+                None => "None",
+            },
+            self.at_lines.len()
+        );
 
         self.at_active = false;
         let lines = core::mem::take(&mut self.at_lines);

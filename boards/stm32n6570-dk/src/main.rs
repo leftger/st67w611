@@ -299,72 +299,6 @@ async fn main(spawner: Spawner) {
     spawner.spawn(rdy_task(rdy, ready, level).unwrap());
 
     let mut engine = Engine::new(spi, cs, ready, hdr_ack, level);
-    let mut rx = [0u8; MAX_PAYLOAD + 8];
-
-    // The module emits a "\r\nready\r\n" banner while it boots, and it is
-    // sitting in the queue waiting for us. Drain it first: otherwise every
-    // response we read is offset by one — which is exactly what we saw, with a
-    // bare AT appearing to answer "ready" and AT+GMR appearing to answer "OK".
-    info!("step: draining pending frames ...");
-    for i in 0..4 {
-        match with_timeout(
-            Duration::from_millis(150),
-            engine.exchange(None, &mut rx),
-        )
-        .await
-        {
-            Ok(Ok(recv)) => {
-                let n = recv.len.min(rx.len());
-                info!("  drain[{}]: {} bytes: {=[u8]}", i, n, &rx[..n]);
-            }
-            _ => break,
-        }
-    }
-
-    // Step 1: a bare AT. If this comes back, SPI + RDY + framing + AT all work.
-    match engine.exchange(Some(Outbound::at(b"AT\r\n")), &mut rx).await {
-        Ok(recv) => {
-            let n = recv.len.min(rx.len());
-            info!("AT -> {} bytes: {=[u8]}", n, &rx[..n]);
-        }
-        Err(e) => error!("AT failed: {:?}", e),
-    }
-
-    // Step 2: firmware identification.
-    //
-    // `AT+GMR` is the command ST's own driver uses for this
-    // (w61_at_sys.c: W61_AT_Send `AT+GMR`, parsing lines such as
-    // "AT version:", "component_version_macsw_", "component_version_sdk_…").
-    // The SDK version is what distinguishes the two firmware builds:
-    // T01 is 2.0.97, T02 is 2.0.106.
-    info!("step: AT+GMR (firmware identification) ...");
-    match engine
-        .exchange(Some(Outbound::at(b"AT+GMR\r\n")), &mut rx)
-        .await
-    {
-        Ok(recv) => {
-            let n = recv.len.min(rx.len());
-            info!("AT+GMR -> {} bytes: {=[u8]}", n, &rx[..n]);
-        }
-        Err(e) => error!("AT+GMR failed: {:?}", e),
-    }
-
-    // The version block spans several lines/frames, so drain the rest of it.
-    info!("step: draining AT+GMR remainder ...");
-    for i in 0..6 {
-        match with_timeout(
-            Duration::from_millis(150),
-            engine.exchange(None, &mut rx),
-        )
-        .await
-        {
-            Ok(Ok(recv)) => {
-                let n = recv.len.min(rx.len());
-                info!("  gmR[{}]: {} bytes: {=[u8]}", i, n, &rx[..n]);
-            }
-            _ => break,
-        }
-    }
 
     // ---- Milestone B: T02 raw-L2 driver -> embassy-net ---------------------
     //
@@ -400,6 +334,33 @@ async fn main(spawner: Spawner) {
         error!("set_dhcpv4 failed");
     }
     spawner.spawn(unwrap!(net_task(net_runner)));
+
+    // Sanity probe: the simplest command there is. If this is not OK either,
+    // something in the AT layer (parsing, echo, framing) is off rather than the
+    // Wi-Fi commands themselves.
+    match control.at("AT").await {
+        Ok(out) => {
+            info!("  probe AT -> ok={}, {} line(s)", out.is_ok(), out.lines.len());
+            for line in out.lines.iter() {
+                info!("    |{}|", line.as_str());
+            }
+        }
+        Err(e) => error!("probe AT failed: {:?}", e),
+    }
+
+    // Scan first. The module is 2.4 GHz only, so if the AP does not appear here
+    // it cannot be joined whatever the credentials are — and that is worth
+    // knowing before blaming the password.
+    info!("step: scanning for APs (AT+CWLAP) ...");
+    match control.scan().await {
+        Ok(out) => {
+            info!("  scan ok={}, {} line(s)", out.is_ok(), out.lines.len());
+            for line in out.lines.iter() {
+                info!("  {}", line.as_str());
+            }
+        }
+        Err(e) => error!("scan failed: {:?}", e),
+    }
 
     // Station mode first. ST's driver always issues AT+CWMODE=1,0 before
     // joining (w61_at_wifi.c), and the module rejects AT+CWJAP outright if it
