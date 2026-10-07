@@ -79,12 +79,6 @@ pub const AT_CMD_MAX: usize = 256;
 /// `AT+CWJAP` gets its own budget (ST's driver uses `W61_WIFI_TIMEOUT`).
 pub const WIFI_JOIN_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long the pre-command drain waits for one stale frame before giving up.
-const DRAIN_TIMEOUT: Duration = Duration::from_millis(10);
-
-/// Most stale frames discarded before issuing a command.
-const DRAIN_MAX_FRAMES: usize = 8;
-
 /// A scan takes several seconds, so `AT+CWLAP` gets its own budget too.
 pub const SCAN_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -255,12 +249,12 @@ impl<'d> Control<'d> {
         Ok(())
     }
 
-    /// List nearby access points (`AT+CWLAP`).
+    /// List nearby access points (`AT+CWLAP=<type>,<ssid>,<mac>,<chan>`).
     ///
     /// The results are returned as raw information lines in
     /// [`AtOutput::lines`].
     pub async fn scan(&self) -> Result<AtOutput> {
-        self.exchange(AtRequest::command("AT+CWLAP", SCAN_TIMEOUT)?).await
+        self.exchange(AtRequest::command("AT+CWLAP=0,,,0", SCAN_TIMEOUT)?).await
     }
 
     /// Enable or disable IPv6 on the station interface (`AT+CIPV6`).
@@ -403,6 +397,19 @@ where
 
     /// Route one received frame by its traffic type.
     fn on_received(&mut self, recv: Received) {
+        // Bring-up tracing: EVERY frame, with its decoded traffic type and raw
+        // payload. This settles whether the module's command replies are typed
+        // as AtCommand: if they are not, they are handed to the network stack
+        // while the AT parser waits forever — which matches the symptom exactly
+        // (the boot banner is parsed, command replies never are).
+        let shown = recv.len.min(64);
+        defmt::trace!(
+            "rx: type={:?} len={} bytes={=[u8]}",
+            recv.traffic_type(),
+            recv.len,
+            &self.rx[..shown]
+        );
+
         match recv.traffic_type() {
             Some(TrafficType::NetworkSta) | Some(TrafficType::NetworkAp) => {
                 self.deliver_ethernet(recv.len);
@@ -464,27 +471,6 @@ where
         self.at_buf.clear();
     }
 
-    /// Read and discard frames the module queued before a command was issued.
-    ///
-    /// Ethernet frames are still delivered to the network stack — only AT
-    /// traffic is dropped. Bounded in both iterations and per-frame time so a
-    /// chatty or wedged module cannot stall the runner.
-    async fn drain_pending(&mut self) {
-        for _ in 0..DRAIN_MAX_FRAMES {
-            match with_timeout(DRAIN_TIMEOUT, self.engine.exchange(None, &mut self.rx)).await {
-                Ok(Ok(recv)) => {
-                    if recv.traffic_type() != Some(TrafficType::AtCommand) {
-                        // Keep delivering real network traffic.
-                        self.on_received(recv);
-                    }
-                }
-                // Nothing pending (or the read failed): the queue is as empty as
-                // we can make it.
-                _ => break,
-            }
-        }
-    }
-
     /// Run one AT transaction and collect its response.
     ///
     /// If the request carries a payload, it is sent once the module answers
@@ -509,7 +495,6 @@ where
         // which shows up as every reply being offset by one, and can even make a
         // stale OK terminate a transaction early so the real reply leaks into the
         // next one.
-        self.drain_pending().await;
 
         // Send the command and dispatch anything that arrived with it.
         if let Ok(recv) = self
