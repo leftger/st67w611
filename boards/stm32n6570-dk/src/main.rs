@@ -40,7 +40,7 @@ use embassy_stm32::spi::{Config as SpiConfig, Spi};
 use embassy_stm32::{bind_interrupts, Config};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{with_timeout, Duration, Instant, Timer};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -272,6 +272,26 @@ async fn main(spawner: Spawner) {
     let mut engine = Engine::new(spi, cs, ready, hdr_ack, level);
     let mut rx = [0u8; MAX_PAYLOAD + 8];
 
+    // The module emits a "\r\nready\r\n" banner while it boots, and it is
+    // sitting in the queue waiting for us. Drain it first: otherwise every
+    // response we read is offset by one — which is exactly what we saw, with a
+    // bare AT appearing to answer "ready" and AT+GMR appearing to answer "OK".
+    info!("step: draining pending frames ...");
+    for i in 0..4 {
+        match with_timeout(
+            Duration::from_millis(150),
+            engine.exchange(None, &mut rx),
+        )
+        .await
+        {
+            Ok(Ok(recv)) => {
+                let n = recv.len.min(rx.len());
+                info!("  drain[{}]: {} bytes: {=[u8]}", i, n, &rx[..n]);
+            }
+            _ => break,
+        }
+    }
+
     // Step 1: a bare AT. If this comes back, SPI + RDY + framing + AT all work.
     match engine.exchange(Some(Outbound::at(b"AT\r\n")), &mut rx).await {
         Ok(recv) => {
@@ -281,8 +301,14 @@ async fn main(spawner: Spawner) {
         Err(e) => error!("AT failed: {:?}", e),
     }
 
-    // Step 2: version/general info. The reply is what tells us T01 vs T02 —
-    // it is expected to contain `mission_t01` / `mission_t02`.
+    // Step 2: firmware identification.
+    //
+    // `AT+GMR` is the command ST's own driver uses for this
+    // (w61_at_sys.c: W61_AT_Send `AT+GMR`, parsing lines such as
+    // "AT version:", "component_version_macsw_", "component_version_sdk_…").
+    // The SDK version is what distinguishes the two firmware builds:
+    // T01 is 2.0.97, T02 is 2.0.106.
+    info!("step: AT+GMR (firmware identification) ...");
     match engine
         .exchange(Some(Outbound::at(b"AT+GMR\r\n")), &mut rx)
         .await
@@ -292,6 +318,23 @@ async fn main(spawner: Spawner) {
             info!("AT+GMR -> {} bytes: {=[u8]}", n, &rx[..n]);
         }
         Err(e) => error!("AT+GMR failed: {:?}", e),
+    }
+
+    // The version block spans several lines/frames, so drain the rest of it.
+    info!("step: draining AT+GMR remainder ...");
+    for i in 0..6 {
+        match with_timeout(
+            Duration::from_millis(150),
+            engine.exchange(None, &mut rx),
+        )
+        .await
+        {
+            Ok(Ok(recv)) => {
+                let n = recv.len.min(rx.len());
+                info!("  gmR[{}]: {} bytes: {=[u8]}", i, n, &rx[..n]);
+            }
+            _ => break,
+        }
     }
 
     // Idle. Milestone B (xarxa -> embassy-net -> DHCP) hangs off here once we
