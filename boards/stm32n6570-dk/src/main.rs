@@ -214,6 +214,21 @@ fn rcc_config() -> Config {
     config
 }
 
+/// EXPERIMENT: power-cycle the module.
+///
+/// Our evidence is that only the *first* exchange after a reset ever works and
+/// everything after it reads 0xFF / repeating patterns off MISO. If resetting
+/// before each command makes them all succeed, the module is degrading into a
+/// non-responsive state after the first transfer rather than the link being
+/// broken from the start.
+async fn reset_module(en: &mut Output<'static>) {
+    en.set_low();
+    Timer::after_millis(50).await;
+    en.set_high();
+    // Boot time: the module prints its "ready" banner before it will answer.
+    Timer::after_millis(500).await;
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let config = rcc_config();
@@ -360,6 +375,7 @@ async fn main(spawner: Spawner) {
     // Scan first. The module is 2.4 GHz only, so if the AP does not appear here
     // it cannot be joined whatever the credentials are — and that is worth
     // knowing before blaming the password.
+    reset_module(&mut en).await;
     info!("step: scanning for APs (AT+CWLAP) ...");
     match control.scan().await {
         Ok(out) => {
@@ -379,6 +395,7 @@ async fn main(spawner: Spawner) {
         Err(e) => error!("set mode failed: {:?}", e),
     }
 
+    reset_module(&mut en).await;
     info!("step: joining Wi-Fi (ssid={}) ...", secrets::WIFI_SSID);
     match control.connect(secrets::WIFI_SSID, secrets::WIFI_PASSWORD).await {
         Ok(()) => info!("step: Wi-Fi joined"),
