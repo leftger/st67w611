@@ -33,12 +33,14 @@ use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
-use embassy_stm32::rcc::{IcConfig, Icint, Icsel, SupplyConfig};
+use embassy_stm32::rcc::{
+    CpuClk, IcConfig, Icint, Icsel, Pll, Plldivm, Pllpdiv, Pllsel, SupplyConfig, SysClk,
+};
 use embassy_stm32::spi::{Config as SpiConfig, Spi};
 use embassy_stm32::{bind_interrupts, Config};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::Timer;
+use embassy_time::{Duration, Instant, Timer};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -117,34 +119,79 @@ async fn rdy_task(
     }
 }
 
-#[embassy_executor::main]
-async fn main(spawner: Spawner) {
+/// Clock setup for the STM32N6570-DK.
+///
+/// Mirrors embassy's own hardware-validated N6 examples (PLL1 = 800 MHz,
+/// cpu = IC1, sys = IC2). The stock default leaves PLL1 bypassed and the IC
+/// muxes unset; peripheral kernel clocks derived from them then read as 0,
+/// which silently disables the peripheral instead of erroring.
+fn rcc_config() -> Config {
     let mut config = Config::default();
 
-    // The STM32N6570-DK uses an EXTERNAL SMPS (UM3300 Tab.6). embassy's default
-    // (internal SMPS) hangs init() at VOSRDY — which is exactly where bring-up
-    // froze, right after the "setting power supply config" log. Taken from the
-    // hardware-validated embassy N6 examples.
+    // The DK uses an EXTERNAL SMPS (UM3300 Tab.6); embassy's internal-SMPS
+    // default hangs init() at VOSRDY.
     config.rcc.supply_config = SupplyConfig::External;
 
-    // SPI5's kernel clock is IC14, and it comes out of reset at 0. With a zero
-    // kernel clock the baud-rate generator produces no SCK and a blocking
-    // transfer waits forever.
-    // ST's own MSP (ST67W6X_CLI_LWIP/FSBL/.../stm32n6xx_hal_msp.c) sets
-    //   Spi5ClockSelection = IC14,  IC14 = PLL1 / 20.
-    // Embassy's default N6 config has PLL1 bypassed to HSI (64 MHz), and
-    // pll_source_ready() accepts a bypassed PLL, so IC14 = PLL1 / 1 = 64 MHz.
-    config.rcc.ic14 = Some(IcConfig {
+    // PLL1 = HSI(64 MHz) / 4 * 50 = 800 MHz.
+    config.rcc.pll1 = Some(Pll::Oscillator {
+        source: Pllsel::Hsi,
+        divm: Plldivm::Div4,
+        fractional: 0,
+        divn: 50,
+        divp1: Pllpdiv::Div1,
+        divp2: Pllpdiv::Div1,
+    });
+
+    config.rcc.ic1 = Some(IcConfig {
         source: Icsel::Pll1,
         divider: Icint::Div1,
     });
+    let sys_ic = IcConfig {
+        source: Icsel::Pll1,
+        divider: Icint::Div4,
+    };
+    config.rcc.ic2 = Some(sys_ic);
+    config.rcc.ic6 = Some(sys_ic);
+    config.rcc.ic11 = Some(sys_ic);
+    config.rcc.cpu = CpuClk::Ic1; // 800 MHz
+    config.rcc.sys = SysClk::Ic2; // 200 MHz
+
+    // SPI5's kernel clock is IC14. ST's own MSP sets Spi5ClockSelection = IC14
+    // with IC14 = PLL1 / 20 (40 MHz here). At zero the baud generator emits no
+    // SCK and a blocking SPI transfer never completes.
+    config.rcc.ic14 = Some(IcConfig {
+        source: Icsel::Pll1,
+        divider: Icint::Div20,
+    });
+
+    config
+}
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    let config = rcc_config();
     let p = embassy_stm32::init(config);
+
+    // embassy's own N6 examples do this immediately after init. Interrupts are
+    // not enabled on this part at that point, and without it the time driver's
+    // TIM interrupt (and every EXTI) is never delivered — which makes every
+    // `with_timeout` wait forever and silently turns the driver's timeouts into
+    // infinite hangs.
+    unsafe {
+        cortex_m::interrupt::enable();
+    }
+
     info!("st67w611 / STM32N6570-DK bring-up (Arduino-header wiring)");
 
     // Module enable (D5 / PE10). Polarity is not documented anywhere I could
     // find — if the module never responds, try Level::Low.
     let _en = Output::new(p.PE10, Level::High, Speed::Low);
     info!("step: CHIP_EN high");
+
+    // The module needs time to boot before it will answer on SPI.
+    // (Previously this delay was impossible: the time driver never ticked.)
+    Timer::after_millis(500).await;
+    info!("step: module settle delay done");
 
     // CS (D10 / PA3). This driver drives CS **active high**, so idle is low.
     // (The old T01 `SpiTransport` was active-low; that inconsistency is a known
@@ -172,6 +219,26 @@ async fn main(spawner: Spawner) {
         .await
         .is_ok();
     info!("step: raw SPI done (ok={})", ok);
+
+    // Does the embassy-time driver actually tick? Nothing has tested this yet,
+    // and if it doesn't, every `with_timeout` in the engine silently becomes an
+    // infinite wait — which matches the symptom exactly (hang, no Err(Timeout)).
+    //
+    // First: is the hardware counter even running? A busy poll on Instant::now()
+    // needs no interrupt, so if this loop exits, TIM5 is counting and the bug is
+    // in the interrupt/wake path. If it hangs, the counter itself is dead.
+    info!("step: busy-polling the time counter ...");
+    let t0 = Instant::now();
+    loop {
+        if Instant::now() - t0 > Duration::from_millis(10) {
+            break;
+        }
+    }
+    info!("step: time counter advances");
+
+    info!("step: waiting 500 ms for the time driver ...");
+    Timer::after_millis(500).await;
+    info!("step: time driver ticks");
 
     // RDY (D3 / PE9), active-high when the module has something to send.
     let rdy = ExtiInput::new(p.PE9, p.EXTI9, Pull::None, Irqs);
