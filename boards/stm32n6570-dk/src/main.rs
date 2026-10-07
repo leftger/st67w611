@@ -142,18 +142,27 @@ async fn rdy_task(
     signal: &'static Signal<CriticalSectionRawMutex, ()>,
     level: &'static AtomicBool,
 ) {
-    let initial = rdy.is_high();
-    level.store(initial, Ordering::Relaxed);
-    if initial {
+    // Poll the RDY pin level, the way ST's port does: `spi_port_is_ready()`
+    // simply returns HAL_GPIO_ReadPin(SPI_RDY_...). There is no edge interrupt
+    // in the reference path at all.
+    //
+    // Inferring the level from edges instead is fragile: a missed edge leaves it
+    // stale, and the engine then either clocks the module while it is not ready
+    // (garbage on MISO) or waits for a wake-up that already happened. Polling
+    // keeps `level` true to the wire within one poll interval.
+    let mut last = rdy.is_high();
+    level.store(last, Ordering::Relaxed);
+    if last {
         signal.signal(());
     }
     loop {
-        rdy.wait_for_high().await;
-        level.store(true, Ordering::Relaxed);
-        signal.signal(());
-        rdy.wait_for_low().await;
-        level.store(false, Ordering::Relaxed);
-        signal.signal(());
+        Timer::after(Duration::from_micros(200)).await;
+        let now_high = rdy.is_high();
+        if now_high != last {
+            last = now_high;
+            level.store(now_high, Ordering::Relaxed);
+            signal.signal(());
+        }
     }
 }
 

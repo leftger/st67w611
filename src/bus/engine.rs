@@ -25,7 +25,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{with_timeout, Duration, Timer};
+use embassy_time::{with_timeout, Duration, Instant, Timer};
 use embedded_hal::digital::OutputPin;
 use embedded_hal_async::spi::SpiBus;
 
@@ -55,6 +55,12 @@ pub const STALL_DRAIN_MAX: usize = 4;
 
 /// Minimum CS setup/hold time around a transfer.
 const CS_DELAY: Duration = Duration::from_micros(1);
+
+/// Minimum delay between a CS deassert and the next assert.
+///
+/// ST's port refuses to re-assert CS until 2 us have elapsed since the previous
+/// deassert; see the `spi_port_set_cs` comment in [`Self::exchange`].
+pub const CS_GAP: Duration = Duration::from_micros(2);
 
 /// Scratch size shared by the TX and RX staging buffers.
 const SCRATCH: usize = HEADER_LEN + MAX_PAYLOAD;
@@ -254,13 +260,44 @@ where
             }
         }
 
-        // Wait for the module to signal readiness, unless RDY is already high.
-        if !self.rdy_level.load(Ordering::Acquire) {
-            with_timeout(TXN_READY_TIMEOUT, self.ready.wait())
-                .await
-                .map_err(|_| Error::Timeout)?;
+        // RDY means "the module has data for us", NOT "you may send".
+        //
+        // ST's engine transfers when it has a frame to send OR RDY is high
+        // (spi_do_xfer: `if ((txbuf != NULL) || (rx_pending == 1))`), and the
+        // port function it consults is literally called spi_port_is_ready() and
+        // just reads the pin. So RDY only decides whether there is data to FETCH.
+        //
+        // Gating a send on RDY deadlocks: the module keeps RDY low because it has
+        // nothing to send — it is waiting for our command — so the command never
+        // leaves the host. That is exactly why the first exchange after boot
+        // worked (the boot banner was pending, so RDY was high) and every command
+        // after it stalled for 2 s and failed.
+        //
+        // Only a receive-only exchange waits for RDY, and it re-checks the level
+        // after every wake-up rather than trusting a single signal.
+        if tx.is_none() {
+            let deadline = Instant::now() + TXN_READY_TIMEOUT;
+            while !self.rdy_level.load(Ordering::Acquire) {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(Error::Timeout);
+                }
+                let _ = with_timeout(deadline - now, self.ready.wait()).await;
+            }
         }
 
+        // Mandatory inter-transfer gap. ST's port refuses to assert CS until at
+        // least 2 us have passed since the previous deassert:
+        //
+        //   static int32_t last_falling_tick;
+        //   if (state == 1) WAIT_FROM(last_falling_tick, MICROSECOND_TO_TICK(2));
+        //   ...
+        //   else { ...deassert...; last_falling_tick = SYSTICK_VALUE; }
+        //
+        // (Projects/NUCLEO-N657X0-Q/.../Target/spi_port.c, spi_port_set_cs.)
+        // Back-to-back transfers with no gap are outside the module's spec, and
+        // it is exactly what our exchanges were doing.
+        Timer::after(CS_GAP).await;
         self.cs.set_high().map_err(|_| Error::Spi)?;
         Timer::after(CS_DELAY).await;
 
