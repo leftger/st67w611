@@ -359,17 +359,30 @@ async fn main(spawner: Spawner) {
     }
     spawner.spawn(unwrap!(net_task(net_runner)));
 
-    // Sanity probe: the simplest command there is. If this is not OK either,
-    // something in the AT layer (parsing, echo, framing) is off rather than the
-    // Wi-Fi commands themselves.
-    match control.at("AT").await {
-        Ok(out) => {
-            info!("  probe AT -> ok={}, {} line(s)", out.is_ok(), out.lines.len());
-            for line in out.lines.iter() {
-                info!("    |{}|", line.as_str());
+    // EXPERIMENT: the module clearly boots and prints "ready", but it takes
+    // longer than we were allowing. So give it a generous settle, then find out
+    // whether it answers REPEATEDLY or only once. That is the question that
+    // decides everything:
+    //
+    //  - five OKs  -> the link is fine and we simply were not waiting for the
+    //                 module to finish booting; the fix is a readiness check.
+    //  - one OK    -> the module wedges after the first transaction, and the
+    //                 fault is on its side of the wire.
+    reset_module(&mut en).await;
+    info!("step: settling 2 s so the module finishes booting ...");
+    Timer::after_millis(2000).await;
+
+    for i in 0..5 {
+        match control.at("AT").await {
+            Ok(out) => {
+                info!("  AT[{}] -> ok={}, {} line(s)", i, out.is_ok(), out.lines.len());
+                for line in out.lines.iter() {
+                    info!("      |{}|", line.as_str());
+                }
             }
+            Err(e) => error!("  AT[{}] failed: {:?}", i, e),
         }
-        Err(e) => error!("probe AT failed: {:?}", e),
+        Timer::after_millis(100).await;
     }
 
     // Scan first. The module is 2.4 GHz only, so if the AP does not appear here
