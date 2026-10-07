@@ -488,21 +488,35 @@ where
         self.at_buf.clear();
         self.at_active = true;
 
-        // Flush anything the module queued before we got here — its boot banner,
-        // unsolicited events, or the tail of a transaction that timed out.
-        //
-        // Without this those frames are consumed as *this* command's response,
-        // which shows up as every reply being offset by one, and can even make a
-        // stale OK terminate a transaction early so the real reply leaks into the
-        // next one.
+        // NOTE: there is deliberately no "drain stale frames" step here. An
+        // earlier version flushed the queue with receive-only exchanges, i.e. it
+        // sent EMPTY AT frames before every command, which jammed the module's
+        // state machine so it stopped answering entirely. at_transaction already
+        // copes with a leading banner or event on its own: it keeps reading until
+        // it sees a terminal OK/ERROR, collecting anything else as a data line.
+
+        // Bring-up tracing: which command starts, with which budget. The command
+        // is truncated so a password never reaches the log.
+        defmt::trace!(
+            "at start: cmd={=[u8]} len={} timeout={}ms",
+            &command[..command.len().min(16)],
+            command.len(),
+            timeout.as_millis()
+        );
 
         // Send the command and dispatch anything that arrived with it.
-        if let Ok(recv) = self
+        match self
             .engine
             .exchange(Some(Outbound::at(&command)), &mut self.rx)
             .await
         {
-            self.on_received(recv);
+            Ok(recv) => {
+                defmt::trace!("at send ok: rx_len={}", recv.len);
+                self.on_received(recv);
+            }
+            // Previously swallowed: if the command frame never got out, the
+            // module cannot answer and the transaction just times out silently.
+            Err(e) => defmt::trace!("at send ERR: {:?}", e),
         }
 
         let deadline = Instant::now() + timeout;
