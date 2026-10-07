@@ -10,9 +10,13 @@ keywords = ["embedded", "wifi", "embassy", "async", "no-std"]
 categories = ["embedded", "no-std", "network-programming"]
 
 [dependencies]
-embassy-executor = "0.9"
-embassy-time = "0.5"
-embassy-sync = "0.7"
+# All embassy crates come from the git checkout (fork @ 63534e797) so the whole
+# workspace shares one source: mixing a path source with a crates.io source for
+# the same crate yields two distinct `embassy_time`/`embassy_sync` types and a
+# wall of type-mismatch errors.
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7" }
 embassy-futures = "0.1"
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
@@ -35,7 +39,7 @@ embedded-tls = { version = "0.19", optional = true, default-features = false }
 # exists in the embassy git repository (branch `feat/n6-drivers` /
 # `upstream/update-xarxa5`). Until it is released, this points at the local
 # checkout. Switch to plain `version = "0.9"` once xarxa ships on crates.io.
-embassy-net = { version = "0.9.1", path = "/home/usuario/Projects/embassy-project/embassy/embassy-net", optional = true, default-features = false, features = [
+embassy-net = { version = "0.9.1", git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", optional = true, default-features = false, features = [
     "medium-ethernet",
     "ipv4",
     "ipv6",
@@ -44,7 +48,7 @@ embassy-net = { version = "0.9.1", path = "/home/usuario/Projects/embassy-projec
     "dhcpv4",
     "dns",
 ] }
-embassy-net-driver-channel = { version = "0.4.0", path = "/home/usuario/Projects/embassy-project/embassy/embassy-net-driver-channel", optional = true }
+embassy-net-driver-channel = { version = "0.4.0", git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", optional = true }
 
 [dev-dependencies]
 # (intentionally empty: see the target-scoped block below)
@@ -55,11 +59,15 @@ embassy-net-driver-channel = { version = "0.4.0", path = "/home/usuario/Projects
 [target.'cfg(target_arch = "arm")'.dev-dependencies]
 # STM32WBA55CG dependencies
 embassy-stm32 = { version = "0.5.0", features = ["defmt", "stm32wba55cg", "time-driver-any", "memory-x", "exti"] }
-embassy-executor = { version = "0.9.0", features = ["arch-cortex-m", "executor-thread", "defmt"] }
-embassy-time = { version = "0.5.0", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
-embassy-sync = { version = "0.7.2", features = ["defmt"] }
+# These three also appear in [dependencies] as path deps into the embassy git
+# checkout, and cargo requires a single canonical source per dependency name,
+# so they have to match here. (embassy-stm32 itself is dev-only, so it can stay
+# on the crates.io release.)
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["platform-cortex-m", "executor-thread", "defmt"] }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["defmt"] }
 embassy-futures = { version = "0.1.2" }
-embassy-net = { version = "0.9.1", path = "/home/usuario/Projects/embassy-project/embassy/embassy-net", features = [
+embassy-net = { version = "0.9.1", git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = [
     "defmt",
     "tcp",
     "udp",
@@ -152,5 +160,5 @@ overflow-checks = false
 # Remove this section, and switch the dependencies above to version
 # requirements, once xarxa is released. It must not ship in a published crate.
 [patch.crates-io]
-embassy-time = { path = "/home/usuario/Projects/embassy-project/embassy/embassy-time" }
-embassy-time-driver = { path = "/home/usuario/Projects/embassy-project/embassy/embassy-time-driver" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7" }

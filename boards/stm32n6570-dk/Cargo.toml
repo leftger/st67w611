@@ -5,13 +5,20 @@ edition = "2021"
 
 # Standalone board crate: `embassy-stm32` allows exactly one chip feature, so
 # the N6 example cannot live alongside the main crate's WBA55 dev-deps.
+#
+# embassy deps are pinned to a `rev` of embassy-rs/embassy rather than a
+# crates.io release: embassy-stm32 0.5.0 has no N6 `ic14` kernel-clock field,
+# and without it SPI5's kernel clock stays at 0 and every SPI transfer hangs.
+# The rev is the exact upstream commit this bring-up was validated against.
+# Every embassy crate must come from the same source — mixing sources yields
+# two distinct `embassy_time`/`embassy_sync` types and a wall of type errors.
 [dependencies]
 st67w611 = { path = "../..", default-features = false, features = ["mission-t02", "defmt"] }
 
-embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thread", "defmt"] }
-embassy-time = { version = "0.5", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
-embassy-sync = { version = "0.7", features = ["defmt"] }
-embassy-stm32 = { version = "0.5", features = ["defmt", "stm32n657x0", "time-driver-any", "exti"] }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["platform-cortex-m", "executor-thread", "defmt"] }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["defmt"] }
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["defmt", "stm32n657x0", "time-driver-any", "exti"] }
 
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
@@ -23,12 +30,11 @@ defmt-rtt = "1.0"
 panic-probe = { version = "1.0", features = ["print-defmt"] }
 static_cell = "2"
 
-# Same workaround as the parent crate: the local embassy checkout is what the
-# xarxa-based embassy-net builds against, and it pins embassy-time-driver
-# (which has `links = "embassy-time"`), so crates.io's copy must be patched out.
+# Force anything still asking for embassy-time from crates.io onto the same
+# local checkout.
 [patch.crates-io]
-embassy-time = { path = "/home/usuario/Projects/embassy-project/embassy/embassy-time" }
-embassy-time-driver = { path = "/home/usuario/Projects/embassy-project/embassy/embassy-time-driver" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7" }
 
 [profile.release]
 opt-level = "s"

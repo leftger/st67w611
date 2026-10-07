@@ -29,10 +29,11 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use defmt::{error, info, unwrap};
+use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
+use embassy_stm32::rcc::{IcConfig, Icint, Icsel, SupplyConfig};
 use embassy_stm32::spi::{Config as SpiConfig, Spi};
 use embassy_stm32::{bind_interrupts, Config};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -100,7 +101,7 @@ static RDY_LEVEL: StaticCell<AtomicBool> = StaticCell::new();
 /// updated *before* the signal.
 #[embassy_executor::task]
 async fn rdy_task(
-    mut rdy: ExtiInput<'static>,
+    mut rdy: ExtiInput<'static, embassy_stm32::mode::Async>,
     signal: &'static Signal<CriticalSectionRawMutex, ()>,
     level: &'static AtomicBool,
 ) {
@@ -118,7 +119,26 @@ async fn rdy_task(
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let p = embassy_stm32::init(Config::default());
+    let mut config = Config::default();
+
+    // The STM32N6570-DK uses an EXTERNAL SMPS (UM3300 Tab.6). embassy's default
+    // (internal SMPS) hangs init() at VOSRDY — which is exactly where bring-up
+    // froze, right after the "setting power supply config" log. Taken from the
+    // hardware-validated embassy N6 examples.
+    config.rcc.supply_config = SupplyConfig::External;
+
+    // SPI5's kernel clock is IC14, and it comes out of reset at 0. With a zero
+    // kernel clock the baud-rate generator produces no SCK and a blocking
+    // transfer waits forever.
+    // ST's own MSP (ST67W6X_CLI_LWIP/FSBL/.../stm32n6xx_hal_msp.c) sets
+    //   Spi5ClockSelection = IC14,  IC14 = PLL1 / 20.
+    // Embassy's default N6 config has PLL1 bypassed to HSI (64 MHz), and
+    // pll_source_ready() accepts a bypassed PLL, so IC14 = PLL1 / 1 = 64 MHz.
+    config.rcc.ic14 = Some(IcConfig {
+        source: Icsel::Pll1,
+        divider: Icint::Div1,
+    });
+    let p = embassy_stm32::init(config);
     info!("st67w611 / STM32N6570-DK bring-up (Arduino-header wiring)");
 
     // Module enable (D5 / PE10). Polarity is not documented anywhere I could
@@ -134,7 +154,7 @@ async fn main(spawner: Spawner) {
 
     // SPI5 on the Arduino header.
     info!("step: creating SPI5 (blocking) ...");
-    let spi = AsyncSpi::new(Spi::new_blocking(
+    let mut spi = AsyncSpi::new(Spi::new_blocking(
         p.SPI5,
         p.PE15,
         p.PG2,
@@ -142,6 +162,16 @@ async fn main(spawner: Spawner) {
         SpiConfig::default(),
     ));
     info!("step: SPI5 ready");
+
+    // Sanity check: can the bus be clocked at all? This bypasses the frame
+    // protocol and the RDY wait, separating "the SPI peripheral has no kernel
+    // clock" from "the engine is stuck waiting for RDY".
+    info!("step: raw SPI transfer ...");
+    let mut probe = [0u8; 8];
+    let ok = embedded_hal_async::spi::SpiBus::transfer_in_place(&mut spi, &mut probe)
+        .await
+        .is_ok();
+    info!("step: raw SPI done (ok={})", ok);
 
     // RDY (D3 / PE9), active-high when the module has something to send.
     let rdy = ExtiInput::new(p.PE9, p.EXTI9, Pull::None, Irqs);
@@ -151,7 +181,10 @@ async fn main(spawner: Spawner) {
     // The DK has no HDR_ACK net; the engine tolerates it never firing.
     let hdr_ack = HDR_ACK_SIGNAL.init(Signal::new());
     let level = RDY_LEVEL.init(AtomicBool::new(false));
-    unwrap!(spawner.spawn(rdy_task(rdy, ready, level)));
+    // embassy-executor 0.10: the *task function* returns
+    // `Result<SpawnToken, SpawnError>` (fallible task pools), while
+    // `spawn()` itself returns `()`.
+    spawner.spawn(rdy_task(rdy, ready, level).unwrap());
 
     let mut engine = Engine::new(spi, cs, ready, hdr_ack, level);
     let mut rx = [0u8; MAX_PAYLOAD + 8];
