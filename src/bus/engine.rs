@@ -49,6 +49,10 @@ pub const MSG_XFER_TIMEOUT: Duration = Duration::from_millis(500);
 /// `SPI_WAIT_HDR_ACK_TIMEOUT_MS` in `spi_port.h`.
 pub const HDR_ACK_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// How many read-only frames to clock while the peer reports its RX stalled
+/// before giving up on ever getting our own frame out.
+pub const STALL_DRAIN_MAX: usize = 4;
+
 /// Minimum CS setup/hold time around a transfer.
 const CS_DELAY: Duration = Duration::from_micros(1);
 
@@ -178,7 +182,44 @@ where
     ///
     /// Returns how many bytes were copied. `out` may be empty when only a
     /// header needs to be clocked.
+    ///
+    /// The peer's RX-stall handshake is handled here; see [`Self::one_exchange`].
     pub async fn exchange(&mut self, tx: Option<Outbound<'_>>, out: &mut [u8]) -> Result<Received> {
+        // When the module reports its RX stalled it will not accept a payload
+        // yet, so the frame has to wait. ST's driver keeps the frame queued and
+        // sends it on the first transfer after the stall clears (spi_iface.c:
+        // `rx_restore` drops the "free the txbuf" branch so the same frame goes
+        // out again next time). We have no queue, so wait it out here: clock
+        // read-only frames until the module is willing to receive, then send it
+        // for real.
+        //
+        // Without this the frame is deferred forever and never actually sent,
+        // because every caller ignores `tx_deferred`. That is exactly why only
+        // the first exchange after boot ever worked: the first command went out,
+        // its reply set the stall bit, and every command after that was silently
+        // dropped while the AT layer waited for a reply to a command that had
+        // never left the host.
+        if tx.is_some() {
+            for _ in 0..STALL_DRAIN_MAX {
+                if !self.rx_stall {
+                    break;
+                }
+                // Frames clocked while stalled are not this command's response;
+                // they are events or banners nobody is waiting for, so discard
+                // them. Returning one would hand the caller an answer to a
+                // question it never asked.
+                let _ = self.one_exchange(None, out).await;
+            }
+            if self.rx_stall {
+                return Err(Error::Timeout);
+            }
+        }
+
+        self.one_exchange(tx, out).await
+    }
+
+    /// One SPI transfer, honouring the stall bit reported by the peer.
+    async fn one_exchange(&mut self, tx: Option<Outbound<'_>>, out: &mut [u8]) -> Result<Received> {
         let tx_deferred = self.rx_stall && tx.is_some();
 
         // Build the outbound frame and decide how many bytes to clock.
@@ -250,9 +291,18 @@ where
         let mut header_bytes = [0u8; HEADER_LEN];
         header_bytes.copy_from_slice(&self.rx_scratch[..HEADER_LEN]);
         let slave = Header::from_bytes(&header_bytes);
-        slave.validate(&header_bytes).map_err(|e| match e {
-            HeaderError::BadMagic | HeaderError::TooLong => Error::InvalidResponse,
-        })?;
+        if slave.validate(&header_bytes).is_err() {
+            // Bring-up tracing: the raw bytes say whether this is garbage, or a
+            // real header read at the wrong offset (i.e. we are desynced by some
+            // number of bytes from the previous exchange).
+            #[cfg(feature = "defmt")]
+            defmt::trace!(
+                "hdr invalid: first_len={} raw={=[u8]}",
+                first_len,
+                &header_bytes[..]
+            );
+            return Err(Error::InvalidResponse);
+        }
 
         let mut available = first_len - HEADER_LEN;
         let extra = second_xfer_len(slave.payload_len(), first_len);
