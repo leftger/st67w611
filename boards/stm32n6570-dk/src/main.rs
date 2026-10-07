@@ -101,14 +101,23 @@ static RDY_LEVEL: StaticCell<AtomicBool> = StaticCell::new();
 ///
 /// The engine samples `rdy_level` after being woken, so the atomic must be
 /// updated *before* the signal.
+///
+/// Note we only signal at startup if RDY is *already* high. Signalling
+/// unconditionally defeats the engine's readiness gate: it would return from
+/// `ready.wait()` immediately even with RDY low and clock a module that isn't up
+/// (which is exactly what made the first bring-up read back garbage instead of
+/// reporting a timeout).
 #[embassy_executor::task]
 async fn rdy_task(
     mut rdy: ExtiInput<'static, embassy_stm32::mode::Async>,
     signal: &'static Signal<CriticalSectionRawMutex, ()>,
     level: &'static AtomicBool,
 ) {
-    level.store(rdy.is_high(), Ordering::Relaxed);
-    signal.signal(());
+    let initial = rdy.is_high();
+    level.store(initial, Ordering::Relaxed);
+    if initial {
+        signal.signal(());
+    }
     loop {
         rdy.wait_for_high().await;
         level.store(true, Ordering::Relaxed);
@@ -184,8 +193,12 @@ async fn main(spawner: Spawner) {
     info!("st67w611 / STM32N6570-DK bring-up (Arduino-header wiring)");
 
     // Module enable (D5 / PE10). Polarity is not documented anywhere I could
-    // find — if the module never responds, try Level::Low.
-    let _en = Output::new(p.PE10, Level::High, Speed::Low);
+    // find, so drive a reset pulse: it exercises both levels and puts the module
+    // through a defined power-on sequence either way.
+    let mut en = Output::new(p.PE10, Level::Low, Speed::Low);
+    info!("step: CHIP_EN low (reset)");
+    Timer::after_millis(100).await;
+    en.set_high();
     info!("step: CHIP_EN high");
 
     // The module needs time to boot before it will answer on SPI.
@@ -242,7 +255,10 @@ async fn main(spawner: Spawner) {
 
     // RDY (D3 / PE9), active-high when the module has something to send.
     let rdy = ExtiInput::new(p.PE9, p.EXTI9, Pull::None, Irqs);
-    info!("step: RDY/EXTI9 ready");
+    // ST's driver gates every transfer on this line (`spi_port_is_ready()`).
+    // If the module is not up — wrong CHIP_EN polarity, no power, still booting
+    // — RDY stays low and clocking it anyway just reads back garbage.
+    info!("step: RDY/EXTI9 ready (rdy={})", rdy.is_high());
 
     let ready = RDY_SIGNAL.init(Signal::new());
     // The DK has no HDR_ACK net; the engine tolerates it never firing.
