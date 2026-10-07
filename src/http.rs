@@ -254,27 +254,24 @@ impl HttpClient {
         request: &HttpRequest,
     ) -> Result<HttpResponse>
     where
-        SPI: embedded_hal_async::spi::SpiDevice,
-        CS: embedded_hal::digital::OutputPin,
+        SPI: embedded_hal_async::spi::SpiDevice + 'static,
+        CS: embedded_hal::digital::OutputPin + 'static,
     {
         // Parse URL
         let parsed = parse_url(&request.url)?;
 
-        // Allocate a socket
-        let socket_id = self
-            .device
-            .allocate_socket(parsed.scheme.socket_protocol())
-            .await?;
-
-        // Connect to the server
-        self.device
-            .connect_socket(spi, socket_id, &parsed.host, parsed.port, self.timeout)
-            .await
-            .map_err(|e| {
-                // Make sure to free the socket on error
-                let _ = self.device.free_socket(socket_id);
-                e
-            })?;
+        // Connect through the unified socket layer. `socket_protocol()` is TCP
+        // for `http://` and SSL for `https://` (the module terminates TLS).
+        let mut socket = crate::stack::TcpSocket::connect_with_protocol(
+            self.device,
+            spi,
+            self.timeout,
+            parsed.scheme.socket_protocol(),
+            &parsed.host,
+            parsed.port,
+        )
+        .await
+        .map_err(|e| e.0)?;
 
         // Format HTTP request
         let mut request_str = String::<1024>::new();
@@ -315,23 +312,23 @@ impl HttpClient {
             .map_err(|_| Error::BufferTooSmall)?;
 
         // Send headers
-        self.device
-            .send_socket(spi, socket_id, request_str.as_bytes(), self.timeout)
+        if embedded_io_async::Write::write_all(&mut socket, request_str.as_bytes())
             .await
-            .map_err(|e| {
-                let _ = self.device.close_socket(spi, socket_id, self.timeout);
-                e
-            })?;
+            .is_err()
+        {
+            let _ = socket.close().await;
+            return Err(Error::SocketError);
+        }
 
         // Send body if present
         if let Some(ref body) = request.body {
-            self.device
-                .send_socket(spi, socket_id, body, self.timeout)
+            if embedded_io_async::Write::write_all(&mut socket, body)
                 .await
-                .map_err(|e| {
-                    let _ = self.device.close_socket(spi, socket_id, self.timeout);
-                    e
-                })?;
+                .is_err()
+            {
+                let _ = socket.close().await;
+                return Err(Error::SocketError);
+            }
         }
 
         // Receive and parse response
@@ -344,34 +341,26 @@ impl HttpClient {
         while embassy_time::Instant::now() < response_timeout
             && total_received < response_buffer.len()
         {
-            match self
-                .device
-                .receive_socket(
-                    spi,
-                    socket_id,
-                    &mut response_buffer[total_received..],
-                    Duration::from_millis(500),
-                )
-                .await
+            match embedded_io_async::Read::read(
+                &mut socket,
+                &mut response_buffer[total_received..],
+            )
+            .await
             {
                 Ok(n) if n > 0 => {
                     total_received += n;
-                    // For now, we'll assume we got the full response after one read
-                    // A proper implementation would check for Content-Length or chunked encoding
+                    // For now, we'll assume we got the full response after one
+                    // read. A proper implementation would check for
+                    // Content-Length or chunked encoding.
                     break;
                 }
-                Ok(_) => {
-                    // No data yet, wait a bit
-                    embassy_time::Timer::after(Duration::from_millis(100)).await;
-                }
-                Err(_) => {
-                    break;
-                }
+                Ok(_) => break,
+                Err(_) => break,
             }
         }
 
         // Close the socket
-        let _ = self.device.close_socket(spi, socket_id, self.timeout).await;
+        let _ = socket.close().await;
 
         // Parse HTTP response
         self.parse_response(&response_buffer[..total_received])
@@ -456,8 +445,8 @@ impl HttpClient {
         url: &str,
     ) -> Result<HttpResponse>
     where
-        SPI: embedded_hal_async::spi::SpiDevice,
-        CS: embedded_hal::digital::OutputPin,
+        SPI: embedded_hal_async::spi::SpiDevice + 'static,
+        CS: embedded_hal::digital::OutputPin + 'static,
     {
         let request = HttpRequest::new(HttpMethod::Get, url)?;
         self.request(spi, &request).await
@@ -471,12 +460,57 @@ impl HttpClient {
         body: &[u8],
     ) -> Result<HttpResponse>
     where
-        SPI: embedded_hal_async::spi::SpiDevice,
-        CS: embedded_hal::digital::OutputPin,
+        SPI: embedded_hal_async::spi::SpiDevice + 'static,
+        CS: embedded_hal::digital::OutputPin + 'static,
     {
         let request = HttpRequest::new(HttpMethod::Post, url)?
             .with_body(body)?
             .with_header("Content-Type", "application/json")?;
+        self.request(spi, &request).await
+    }
+
+    /// Perform a PUT request
+    pub async fn put<SPI, CS>(
+        &self,
+        spi: &'static TmMutex<SpiTransport<SPI, CS>>,
+        url: &str,
+        body: &[u8],
+    ) -> Result<HttpResponse>
+    where
+        SPI: embedded_hal_async::spi::SpiDevice + 'static,
+        CS: embedded_hal::digital::OutputPin + 'static,
+    {
+        let request = HttpRequest::new(HttpMethod::Put, url)?
+            .with_body(body)?
+            .with_header("Content-Type", "application/json")?;
+        self.request(spi, &request).await
+    }
+
+    /// Perform a HEAD request
+    pub async fn head<SPI, CS>(
+        &self,
+        spi: &'static TmMutex<SpiTransport<SPI, CS>>,
+        url: &str,
+    ) -> Result<HttpResponse>
+    where
+        SPI: embedded_hal_async::spi::SpiDevice + 'static,
+        CS: embedded_hal::digital::OutputPin + 'static,
+    {
+        let request = HttpRequest::new(HttpMethod::Head, url)?;
+        self.request(spi, &request).await
+    }
+
+    /// Perform a DELETE request
+    pub async fn delete<SPI, CS>(
+        &self,
+        spi: &'static TmMutex<SpiTransport<SPI, CS>>,
+        url: &str,
+    ) -> Result<HttpResponse>
+    where
+        SPI: embedded_hal_async::spi::SpiDevice + 'static,
+        CS: embedded_hal::digital::OutputPin + 'static,
+    {
+        let request = HttpRequest::new(HttpMethod::Delete, url)?;
         self.request(spi, &request).await
     }
 }

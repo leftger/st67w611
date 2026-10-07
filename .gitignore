@@ -29,6 +29,18 @@ RTT*.txt
 # Local configuration
 .cargo/
 
+# ...except board crates, where .cargo/config.toml (target, runner, rustflags)
+# is part of the crate and must be committed.
+!boards/*/.cargo/
+!boards/*/.cargo/config.toml
+
+# Build artifacts inside board crates (the root /target/ rule does not reach
+# them, and they are hundreds of MB).
+boards/**/target/
+
+# Vendor documentation (schematics/datasheets are large; keep them local).
+docs/*.pdf
+
 # Claude Code session files
 .claude/
 

@@ -144,6 +144,26 @@ impl NetworkDevice {
         }
     }
 
+    /// The transport-generic network client sharing this device's AT link.
+    ///
+    /// Use it for the interface options and services the device does not
+    /// expose: IPv6, receive mode, TCP options, TLS options, DNS, SNTP, ping
+    /// and TCP servers.
+    pub fn client<SPI, CS>(
+        &self,
+        spi: &'static TmMutex<SpiTransport<SPI, CS>>,
+    ) -> crate::net::client::Net<crate::at::transport::ProcessorTransport<'static, SPI, CS>>
+    where
+        SPI: embedded_hal_async::spi::SpiDevice,
+        CS: embedded_hal::digital::OutputPin,
+    {
+        crate::net::client::Net::new(crate::at::transport::ProcessorTransport::new(
+            self.processor,
+            spi,
+            embassy_time::Duration::from_secs(5),
+        ))
+    }
+
     /// Allocate a socket
     pub async fn allocate_socket(&self, protocol: SocketProtocol) -> Result<SocketId> {
         for (id, socket) in self.sockets.iter().enumerate() {

@@ -224,12 +224,12 @@ where
         let payload_len = header.len as usize;
 
         #[cfg(feature = "defmt")]
-        defmt::trace!("SPI RX: magic={:04x}, len={}", magic, payload_len);
+        defmt::trace!("SPI RX: magic={:04x}, len={}", _magic, payload_len);
 
         if !header.is_valid() {
             self.cs.set_low().map_err(|_| Error::Spi)?;
             #[cfg(feature = "defmt")]
-            defmt::warn!("Invalid SPI header magic: {:04x}", magic);
+            defmt::warn!("Invalid SPI header magic: {:04x}", _magic);
             return Err(Error::InvalidResponse);
         }
 

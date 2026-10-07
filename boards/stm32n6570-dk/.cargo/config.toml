@@ -1,0 +1,16 @@
+[build]
+target = "thumbv8m.main-none-eabihf"
+
+[target.thumbv8m.main-none-eabihf]
+# Matches the embassy STM32N6 examples (examples/stm32n6/.cargo/config.toml),
+# which are hardware-validated on this exact board.
+runner = 'probe-rs run --chip STM32N657'
+rustflags = [
+    "-C", "target-cpu=cortex-m55",
+    "-C", "target-feature=+mve,+dsp",
+    "-C", "link-arg=-Tlink.x",
+    "-C", "link-arg=-Tdefmt.x",
+]
+
+[env]
+DEFMT_LOG = "trace"

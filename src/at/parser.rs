@@ -310,8 +310,18 @@ mod tests {
         let result = parse_csv("1,\"test\",3");
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].as_str(), "1");
-        assert_eq!(result[1].as_str(), "\"test\"");
+        // parse_csv strips the surrounding quotes itself.
+        assert_eq!(result[1].as_str(), "test");
         assert_eq!(result[2].as_str(), "3");
+    }
+
+    #[test]
+    fn test_parse_csv_keeps_commas_inside_quotes() {
+        let result = parse_csv("+CWLAP:(3,\"my,ssid\",-42)");
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].as_str(), "+CWLAP:(3");
+        assert_eq!(result[1].as_str(), "my,ssid");
+        assert_eq!(result[2].as_str(), "-42)");
     }
 
     #[test]

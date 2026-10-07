@@ -1,0 +1,35 @@
+[package]
+name = "stm32n6570-dk"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone board crate: `embassy-stm32` allows exactly one chip feature, so
+# the N6 example cannot live alongside the main crate's WBA55 dev-deps.
+[dependencies]
+st67w611 = { path = "../..", default-features = false, features = ["mission-t02", "defmt"] }
+
+embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thread", "defmt"] }
+embassy-time = { version = "0.5", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
+embassy-sync = { version = "0.7", features = ["defmt"] }
+embassy-stm32 = { version = "0.5", features = ["defmt", "stm32n657x0", "time-driver-any", "exti"] }
+
+embedded-hal = "1.0"
+embedded-hal-async = "1.0"
+
+cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7"
+defmt = "1.0"
+defmt-rtt = "1.0"
+panic-probe = { version = "1.0", features = ["print-defmt"] }
+static_cell = "2"
+
+# Same workaround as the parent crate: the local embassy checkout is what the
+# xarxa-based embassy-net builds against, and it pins embassy-time-driver
+# (which has `links = "embassy-time"`), so crates.io's copy must be patched out.
+[patch.crates-io]
+embassy-time = { path = "/home/usuario/Projects/embassy-project/embassy/embassy-time" }
+embassy-time-driver = { path = "/home/usuario/Projects/embassy-project/embassy/embassy-time-driver" }
+
+[profile.release]
+opt-level = "s"
+lto = true

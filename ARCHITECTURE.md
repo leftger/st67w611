@@ -2,347 +2,243 @@
 
 ## Overview
 
-This document explains the architectural design of the ST67W611 async driver, key decisions, and usage recommendations.
+This document explains the architectural design of the ST67W611 async driver, key
+decisions, and usage recommendations.
 
-## Layer Architecture
+## Firmware architectures
+
+The module runs one of two firmwares; the host build selects which one it is
+talking to.
+
+| | **T01** (`mission-t01`, default) | **T02** (`mission-t02`) |
+|---|---|---|
+| TCP/IP stack | on the module | on the host MCU |
+| Host API | AT-command sockets | `embassy-net` (xarxa) over raw Ethernet frames |
+| SPI traffic | application data only | every frame, header/ACK included |
+| Best for | throughput, simple apps | IPv6, host TLS, existing embassy-net code |
+
+The module advertises both as separate firmware images (`ST67W6X_CLI` and
+`ST67W6X_CLI_LWIP` in the X-CUBE package).
+
+## Layer architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  High-Level APIs                                            │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
-│  │  WiFi    │  │   HTTP   │  │   MQTT   │  │ Advanced │   │
-│  │ Manager  │  │  Client  │  │  Client  │  │   (DNS)  │   │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                              │
-┌─────────────────────────────────────────────────────────────┐
-│  Network Device Layer                                       │
-│  ┌──────────────────┐         ┌──────────────────┐         │
-│  │  NetworkDevice   │         │ St67w611Driver   │         │
-│  │ (Socket Mgmt)    │         │ (embassy-net)    │         │
-│  └──────────────────┘         └──────────────────┘         │
-└─────────────────────────────────────────────────────────────┘
-                              │
-┌─────────────────────────────────────────────────────────────┐
-│  AT Command Layer                                           │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐                 │
-│  │ Command  │  │  Parser  │  │   RX     │                 │
-│  │ Builder  │  │          │  │Processor │                 │
-│  └──────────┘  └──────────┘  └──────────┘                 │
-└─────────────────────────────────────────────────────────────┘
-                              │
-┌─────────────────────────────────────────────────────────────┐
-│  Bus Layer (SPI Transport)                                  │
-│  ┌──────────────────────────────────────────┐              │
-│  │  SpiTransport (embedded-hal-async)       │              │
-│  └──────────────────────────────────────────┘              │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                         Hardware SPI
+┌──────────────────────────────────────────────────────────────┐
+│  Application                                                  │
+├───────────────────────────┬──────────────────────────────────┤
+│  T01 high-level APIs      │  T02: embassy-net ::Stack (xarxa) │
+│  WiFi/HTTP/MQTT/Advanced  │  TCP · UDP · DHCP · DNS · SLAAC   │
+│                           │  embedded-tls (net::tls)          │
+├───────────────────────────┴──────────────────────────────────┤
+│  net::xarxa ---- embassy-net-driver-channel (ch::Device)      │
+│     │                        ▲ PacketBuf   │ PacketBuf        │
+│     └────────────► Runner ───┘             ▼                  │
+│   Control (AT) ──► │        bus::engine::Engine               │
+├────────────────────┴──────────────────────────────────────────┤
+│  AT layer (command/parser/processor)  ·  bus::frame codec     │
+├───────────────────────────────────────────────────────────────┤
+│  SPI (CS active-high, RDY EXTI)                               │
+└───────────────────────────────────────────────────────────────┘
 ```
 
-## Key Design Decisions
+## Key design decisions
 
-### 1. No-std and No Allocator
+### 1. No-std and no allocator
 
-**Decision**: Use `heapless` collections exclusively, no heap allocation.
+`heapless` collections exclusively, static resource pools, compile-time buffer
+capacities.
 
-**Rationale**:
-- Embedded systems often lack heap allocators
-- Predictable memory usage
-- No allocation failures at runtime
-- Better for safety-critical applications
+### 2. Async/await with Embassy
 
-**Implementation**:
-- Fixed-size `heapless::Vec` and `heapless::String` throughout
-- Static resource pools (response slots, sockets)
-- Compile-time capacity configuration
+All I/O is async; background tasks drive RX and event distribution.
 
-### 2. Async/Await with Embassy
+### 3. The SPI frame protocol (`bus::frame`, `bus::engine`)
 
-**Decision**: Built on Embassy framework, async throughout.
+Every transaction is a **full-duplex exchange**, mirroring `spi_xfer_one()` in
+`Driver/W61_bus/spi_iface.c`:
 
-**Rationale**:
-- Efficient cooperative multitasking without OS overhead
-- Natural API for I/O operations
-- Better than blocking or callback-based approaches
-- Growing ecosystem in embedded Rust
+* 8-byte header: `magic(0x55AA) · len(u16) · version:2|rx_stall:1|flags:5 · type · rsvd`.
+* The host asserts CS (active **high**), clocks `HEADER_LEN + align4(payload)`
+  bytes, and simultaneously reads the module's own header.
+* If the module announced a longer frame than was clocked, a second read-only
+  transfer fetches the remainder, still inside the same CS.
+* Payloads are padded to 4 bytes with `0x88`.
+* When the module reports `rx_stall`, the host must stop attaching payloads
+  until the bit clears; the engine tracks this and reports `tx_deferred`.
+* Traffic types (`AtCommand`, `NetworkSta`, `NetworkAp`, `Hci`, `OpenThread`)
+  let AT control and raw L2 data share one physical link.
 
-**Implementation**:
-- All I/O operations are async
-- Uses `embassy-sync` primitives (Mutex, Signal, Channel)
-- Background tasks for RX processing and data routing
+Timeouts follow the reference: 2000 ms RDY, 500 ms transfer, 100 ms header-ack
+(lenient). `MAX_PAYLOAD` is 1520 (`W61_MAX_SPI_XFER`).
 
-### 3. Multi-Response Command Support
+The older `bus::spi` transport (split read/write, CS active-low) is kept only
+for the legacy T01 path; it does not model the exchange and should not be used
+for new code.
 
-**Decision**: Separate handling for commands that return multiple data lines.
+### 4. Event-driven RX
 
-**Rationale**:
-- WiFi scan returns multiple `+CWLAP` lines
-- IP config query returns multiple `+CIPSTA` lines
-- Need to collect all responses before returning to caller
+The AT layer routes unsolicited events (Wi-Fi state, socket events, `+IPD`)
+through channels. The T02 runner routes L2 frames by traffic type.
 
-**Implementation**:
-- `ResponseSlot` has both a signal (for single response) and channel (for multiple)
-- `send_multi_response_command()` enables collection mode
-- Responses collected until final `OK` or `ERROR`
+## T02: the embassy-net (xarxa) driver
 
-### 4. Event-Driven Architecture
+`embassy-net` 0.9 is a façade over the [xarxa](https://github.com/embassy-rs/xarxa)
+stack; the old packet-token `embassy-net-driver` trait is gone. A driver now
+implements `xarxa_driver::Driver` — or reuses `embassy-net-driver-channel`,
+which is what `cyw43` and `enc28j60` do, and what `net::xarxa` does here.
 
-**Decision**: Use channels for event distribution (WiFi events, socket events, IPD data).
+`net::xarxa::new()` returns three handles:
 
-**Rationale**:
-- Decouples RX processing from event consumers
-- Non-blocking event delivery
-- Multiple consumers can wait on events
+* **`WifiDevice`** (`ch::Device`) — hand it to the stack with
+  `Stack::add_iface_borrowed(&mut device)`.
+* **`Runner`** — owns the SPI `Engine`; spawn `Runner::run()`. It multiplexes,
+  via `select3`, three wakeups: AT requests, outbound `PacketBuf`s from the
+  stack, and the module's RDY line. Received `NetworkSta`/`NetworkAp` frames
+  are copied into `PacketBuf`s and pushed to the channel; `AtCommand` frames
+  feed the line parser.
+* **`Control`** — `at()`, `connect()`, `disconnect()`, `scan()`, `set_ipv6()`.
+  `connect()` raises the channel link state, which is what lets the stack start
+  using the interface (DHCP, etc.).
 
-**Implementation**:
-- WiFi events: Connection, disconnection, got IP
-- Socket events: Connected, closed, data available
-- IPD data: Actual received socket data bytes
+The global xarxa packet pool holds the buffers, so the channel queues cost a
+handful of bytes per slot, not a whole frame each.
 
-## embassy-net Integration Challenge
+### IPv6
 
-### The Problem
+`ipv6` is enabled on `embassy-net` in `Cargo.toml`, so the stack speaks IPv6
+(NDISC, SLAAC, ICMPv6) out of the box. `Control::set_ipv6(true)` issues
+`AT+CIPV6=1` to enable it on the module link.
 
-**ST67W611 Architecture:**
-```
-Application → AT Commands → Module's TCP/IP Stack → WiFi → Network
-              (AT+CIPSTART)   (Built-in)
-```
+### TLS (`tls` feature)
 
-**embassy-net Architecture:**
-```
-Application → smoltcp Stack → Driver (packets) → WiFi → Network
-              (TCP/IP in MCU)   (Raw packets)
-```
+`embedded-tls` 0.19 implements `embedded-io-async` 0.7, which
+`embassy_net::tcp::TcpSocket` also implements, so `net::tls::client()` wraps a
+connected socket directly. Certificate verification comes from embedded-tls's
+`rustpki` (no_std) or `webpki` (std) provider; without one, `UnsecureProvider`
+performs no verification and is for bring-up only.
 
-**Mismatch**:
-- ST67W611 expects socket-level commands (connect, send, receive)
-- embassy-net expects packet-level interface (Ethernet/IP frames)
-- The module's TCP/IP stack and smoltcp would conflict
+### Throughput caveat
 
-### Current Implementation
+The SPI link caps out at roughly 1–2 MB/s at 30 MHz. In T02 every header, ACK
+and retransmission crosses that link, so T02 trades throughput for stack
+features. T01 keeps protocol processing on the module and moves only
+application data, which is why it remains the default.
 
-The `St67w611Driver` implements the `embassy_net::driver::Driver` trait with:
+## X-CUBE-ST67W61 coverage
 
-- ✅ **Link state tracking**: Works correctly, reflects WiFi connection status
-- ✅ **Packet buffer infrastructure**: RX/TX queues for packet storage
-- ✅ **Token-based interface**: Proper RxToken and TxToken implementations
-- ⚠️ **Packet bridging**: Infrastructure present but requires custom logic
+Comparison against the `W6X` network driver v1.3.0 (April 2026). "AT" means the
+command builders exist and are unit-tested; a high-level typed driver may still
+be missing. "—" means not implemented in this crate yet.
 
-### Why Transparent Mode Isn't Feasible
+| Area | X-CUBE | This crate |
+|---|---|---|
+| Bus / SPI protocol | full-duplex engine | ✅ `bus::engine` |
+| Typed clients (both firmwares) | — | ✅ `ble::Ble`, `fwu::Fwu`, `wifi::WiFi`, `net::client::Net` |
+| Wi-Fi station + Soft-AP | ✅ | ✅ (`wifi`, typed `wifi::WiFi`) |
+| Wi-Fi credentials store (`AT+CWCRED*`) | ✅ | AT + typed (`wifi::WiFi`) |
+| TWT / DTIM / antenna diversity | ✅ | AT + typed (`wifi::WiFi`) |
+| Country code, auto-connect, WPS | ✅ | AT + typed (`wifi::WiFi`) |
+| Sockets (T01) TCP/UDP/SSL | ✅ | ✅ (`net::NetworkDevice`) |
+| IPv6 sockets (T01) | ✅ | AT `AT+CIPV6` + `net::client::Net` |
+| Server sockets / `CIPRECVMODE` | ✅ | AT + typed (`net::client::Net`) |
+| HTTP client | GET/HEAD/POST/PUT | GET/POST/PUT/HEAD/DELETE (`http`) |
+| MQTT | cfg/conn/SNI/raw/LWT | ✅ typed (`mqtt::Mqtt`), incl. Last Will (`AT+MQTTCONNCFG`) |
+| T01 AT socket stack | module-side TCP/IP | ✅ `net::NetworkDevice` + `http` + `tls` (the T01 data path) |
+| DNS (v4 + v6) / SNTP / ping | ✅ | ✅ typed (`net::client::Net`: `resolve`, `sntp_time_string`, `ping_rtt`) |
+| Host-side stack (T02 netif) | ✅ (LwIP) | ✅ (`net::xarxa`, xarxa-based) |
+| TLS | on module | ✅ via `embedded-tls` (`net::tls`) |
+| Firmware update / FOTA | ✅ (`AT+OTASTART/SEND/FIN`) | ✅ typed driver (`fwu::Fwu`) |
+| System / filesystem (`AT+FS`) | ✅ | AT (`at::command::{system,filesystem}`) |
+| BLE (adv/scan/GATT/security) | ✅ | ✅ commands (`at::ble`) + typed driver (`ble::Ble`) |
+| Shell / iperf / wfa-tg | ✅ | — |
 
-**Hardware Limitation**: The ST67W611 has a maximum SPI clock of 30MHz, which provides:
-- Theoretical max throughput: ~3.75 MB/s
-- Practical throughput: ~1-2 MB/s (accounting for protocol overhead)
+The X-CUBE surface is enumerated in
+`Middlewares/ST/ST67W6X_Network_Driver/Api/w6x_api.h` and documented in its
+`Doc/README.md`.
 
-**Why this matters**:
-- Raw packet forwarding would consume most/all available SPI bandwidth
-- WiFi can provide 10-100+ Mbps, but SPI becomes the bottleneck
-- Module's built-in TCP/IP stack is actually the **correct architecture**
-- The stack handles protocol processing locally, only sending/receiving application data over SPI
-- This dramatically reduces SPI traffic and improves efficiency
+## Memory layout (T01 defaults)
 
-**Conclusion**: Transparent/packet mode is not just unimplemented—it's architecturally inappropriate for this hardware. The socket-based AT command interface is the right design.
+| Buffer | Default | Configurable |
+|---|---|---|
+| SPI RX | 4096 B | via `Config` |
+| Socket RX | 2048 B × 8 | via `Config` |
+| Multi-response | 512 B × 32 | fixed |
+| Wi-Fi events | 4 slots | fixed |
+| Socket events | 16 slots | fixed |
+| IPD data | 2048 B × 4 | fixed |
 
-### Socket API Approach (Correct Design)
+T02 adds the `Engine` staging buffers (2 × 1528 B), a 1528 B frame buffer in the
+runner, and the global xarxa packet pool (default 16 × ~1516 B, tunable through
+xarxa's `packet-buf-count-*` / `packet-buf-*` features).
 
-**Architecture:**
-```
-Application → Socket APIs → Module TCP/IP Stack → WiFi (100+ Mbps)
-              (Efficient)   (Local processing)
+## Concurrency model
 
-SPI transfers: Only application data + AT commands
-Bandwidth usage: Minimal, scales with actual data
-```
+* `CriticalSectionRawMutex` for sync primitives.
+* Atomic link state.
+* All waits are async; no busy-waiting.
+* One task owns the SPI engine (`AtProcessor::rx_task` in T01, `xarxa::Runner`
+  in T02), which serialises access to the bus.
 
-**Implementation Status:**
-- ✅ NetworkDevice for raw socket operations
-- ✅ HttpClient for HTTP/HTTPS requests
-- ✅ MqttClient for pub/sub messaging
-- ✅ TLS with certificate management
-- ✅ DNS, SNTP, Ping utilities
+## API usage patterns
 
-### embassy-net Status
-
-**Infrastructure provided:**
-- ✅ Complete Driver trait implementation
-- ✅ Packet buffers and queues
-- ✅ RxToken and TxToken
-- ✅ Link state tracking
-
-**Packet bridging**: Not implemented and **not recommended** due to:
-1. SPI bandwidth limitations vs WiFi throughput
-2. Added complexity with minimal benefit
-3. Socket APIs are more efficient and feature-complete
-
-**Use embassy-net ONLY if:**
-- You have existing code requiring embassy-net compatibility
-- You understand the limitations and accept reduced performance
-- You're willing to implement custom packet bridging logic
-
-**For all other uses**: Use the socket APIs directly
-
-The driver provides complete implementations of:
-- TCP/UDP sockets via `NetworkDevice`
-- HTTP/HTTPS via `HttpClient`
-- MQTT via `MqttClient`
-- DNS, SNTP, Ping via `advanced` module
-
-## Memory Layout
-
-### Static Resources
+### T01 Wi-Fi
 
 ```rust
-// Required static allocations:
-- SpiTransport: ~16 bytes
-- TmMutex<SpiTransport>: ~20 bytes
-- AtProcessor: ~2KB (response slots + channels)
-- WiFiManager: ~8 bytes
-- NetworkDevice: ~20KB (socket pool with buffers)
-- TlsManager: ~8 bytes
-- Driver: ~32 bytes
-
-Total: ~22KB
-```
-
-### Buffer Configuration
-
-| Buffer | Default Size | Configurable | Purpose |
-|--------|-------------|--------------|---------|
-| SPI RX | 4096 bytes | ✅ via Config | SPI read operations |
-| Socket RX | 2048 bytes × 8 | ✅ via Config | Per-socket received data |
-| Multi-response | 512 bytes × 32 | Fixed | Collecting scan results |
-| WiFi events | 4 slots | Fixed | WiFi state changes |
-| Socket events | 16 slots | Fixed | Socket notifications |
-| IPD data | 2048 bytes × 4 | Fixed | Received socket data |
-
-**Total RAM**: ~45-50KB
-
-## Concurrency Model
-
-### Background Tasks
-
-**RX Processor Task** (`processor.rx_task()`):
-- Continuously reads from SPI
-- Parses AT responses line-by-line
-- Routes to handlers
-- Switches to binary mode for +IPD
-
-**IPD Processor Task** (`network.ipd_processor_task()`):
-- Monitors IPD data channel
-- Routes data to socket buffers
-
-**User Tasks**:
-- Application code using async APIs
-- Cooperative multitasking via Embassy
-
-### Synchronization
-
-- **CriticalSectionRawMutex**: For all sync primitives
-- Lock-free where possible (atomics for link state)
-- No busy-waiting (all waits are async)
-
-## API Usage Patterns
-
-### WiFi Connection
-
-```rust
-// Initialize
 driver.init_wifi(WiFiMode::Station).await?;
-
-// Scan
 let results = driver.wifi_scan().await?;
-
-// Connect
 driver.wifi_connect("SSID", "password").await?;
-
-// Get IP
 let ip_config = driver.get_ip_config().await?;
 ```
 
-### TCP Socket
+### T01 socket / HTTP / MQTT
 
 ```rust
 let device = driver.network_device();
+let socket = device.allocate_socket(SocketProtocol::Tcp).await?;
+device.connect_socket(spi, socket, "example.com", 80, timeout).await?;
+device.send_socket(spi, socket, data, timeout).await?;
 
-// Allocate socket
-let socket_id = device.allocate_socket(SocketProtocol::Tcp).await?;
-
-// Connect
-device.connect_socket(spi, socket_id, "example.com", 80, timeout).await?;
-
-// Send
-device.send_socket(spi, socket_id, data, timeout).await?;
-
-// Receive
-let n = device.receive_socket(spi, socket_id, buffer, timeout).await?;
-
-// Close
-device.close_socket(spi, socket_id, timeout).await?;
-```
-
-### HTTP Request
-
-```rust
 let http = driver.http_client();
-
-// GET
 let response = http.get(spi, "https://api.example.com/data").await?;
 
-// POST
-let response = http.post(spi, "https://api.example.com/endpoint", body).await?;
+let mqtt = driver.mqtt_client(0);
+mqtt.subscribe(spi, "topic/test", MqttQos::AtLeastOnce).await?;
 ```
 
-### MQTT
+### T02 embassy-net
 
 ```rust
-let mqtt = driver.mqtt_client(0);
+let (device, runner, control) = xarxa::new(spi, cs, &READY, &HDR_ACK, &RDY_LEVEL, state, mac);
+spawner.spawn(wifi_task(runner)).unwrap();
 
-// Connect
-let mut config = MqttConfig::default();
-config.client_id.push_str("my_device").unwrap();
-mqtt.connect(spi, "broker.hivemq.com", 1883, &config).await?;
+let mut device = device;
+let (stack, stack_runner) = embassy_net::Stack::new(resources, seed);
+stack.add_iface_borrowed(&mut device)?;
+spawner.spawn(net_task(stack_runner)).unwrap();
 
-// Subscribe
-mqtt.subscribe(spi, "topic/test", MqttQos::AtLeastOnce).await?;
-
-// Publish
-mqtt.publish(spi, "topic/test", "Hello", MqttQos::AtLeastOnce, false).await?;
+control.connect("SSID", "password").await?;   // raises link state
+control.set_ipv6(true).await?;
 ```
 
-## Porting Guide
+## Porting guide
 
-### From FreeRTOS Driver
-
-Embassy replacements:
+Embassy replacements for the FreeRTOS primitives used by the C driver:
 
 | FreeRTOS | Embassy |
-|----------|---------|
+|---|---|
 | `xQueueCreate` | `Channel::new()` |
 | `xSemaphoreCreateBinary` | `Signal::new()` |
 | `xTaskCreate` | `spawner.spawn()` |
 | `vTaskDelay` | `Timer::after().await` |
 
-### API Mapping
-
-Similar high-level API:
-
-```c
-// C API
-w6x_wifi_connect("SSID", "pwd");
-
-// Rust API
-driver.wifi_connect("SSID", "pwd").await?;
-```
+The AT-command API maps closely (`w6x_wifi_connect` → `Control::connect`), but
+the C driver's per-call callbacks and blocking waits become `async fn`s.
 
 ## Contributing
 
 Maintain:
-- No-std compatibility
-- No heap allocation
-- Async APIs
-- Comprehensive error handling
-- Tests for parsing logic
-- Examples for features
+
+* No-std compatibility, no heap allocation.
+* Async APIs.
+* Reference-faithful bus behaviour (`bus::engine` is the source of truth).
+* Tests for parsing and frame logic (`cargo test --lib` runs them on the host).

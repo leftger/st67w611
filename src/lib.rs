@@ -31,12 +31,39 @@
 //! - WiFi configuration via AT commands
 //! - Raw Ethernet frame transport
 //!
+//! ## Firmware selection
+//!
+//! Exactly one firmware feature is active, and it picks where TCP/IP lives:
+//!
+//! | | T01 (`mission-t01`, default) | T02 (`mission-t02`) |
+//! |---|---|---|
+//! | TCP/IP | on the module | on the host (`embassy-net`) |
+//! | Sockets | AT sockets via `net::NetworkDevice` | `embassy-net` sockets via `net::xarxa` |
+//! | Enter via | [`Driver`] | `driver_t02::Driver` (also exported as [`Driver`]) |
+//!
+//! Everything above the socket layer is **identical** on both firmwares: the
+//! same clients, reached the same way.
+//!
+//! ```ignore
+//! // Both firmwares: one driver, one set of accessors.
+//! let wifi  = driver.wifi();   // mode, scan, credentials, TWT, Soft-AP
+//! let net   = driver.net();    // IPv6, DNS (typed), SNTP, ping, TCP server
+//! let ble   = driver.ble();
+//! let fwu   = driver.fwu();
+//! let mqtt  = driver.mqtt();
+//! ```
+//!
+//! Sockets are unified too: [`stack::TcpSocket`] resolves to the module's
+//! AT-socket adapter on T01 and to `embassy_net::tcp::TcpSocket` on T02, and in
+//! both cases implements `embedded-io-async`'s `Read`/`Write` — so application
+//! code and [`net::tls`] are firmware-independent.
+//!
 //! # Example (T01 Firmware)
 //!
 //! ```no_run,ignore
 //! use st67w611::{
 //!     at::processor::AtProcessor, bus::SpiTransport, Config, Driver,
-//!     NetworkDevice, TlsManager, WiFiManager, WiFiMode, SocketProtocol,
+//!     NetworkDevice, TlsManager, WiFiMode, SocketProtocol,
 //! };
 //! use embassy_executor::Spawner;
 //!
@@ -90,10 +117,14 @@ pub use embassy_time::Duration;
 
 // Module declarations - always available
 pub mod at;
+pub mod ble;
 pub mod bus;
 pub mod config;
 pub mod error;
+pub mod fwu;
+pub mod mqtt;
 pub mod net;
+pub mod stack;
 pub mod sync;
 pub mod types;
 pub mod util;
@@ -101,15 +132,13 @@ pub mod wifi;
 
 // T01-specific modules (AT command-based networking)
 #[cfg(feature = "mission-t01")]
-pub mod advanced;
-#[cfg(feature = "mission-t01")]
 pub mod http;
 #[cfg(feature = "mission-t01")]
-pub mod mqtt;
-#[cfg(feature = "mission-t01")]
 pub mod power;
-#[cfg(feature = "mission-t01")]
-pub mod tls;
+
+// T02-specific module: the driver facade mirroring the T01 `Driver`
+#[cfg(feature = "mission-t02")]
+pub mod driver_t02;
 
 // Public API exports
 pub use config::Config;
@@ -126,7 +155,9 @@ use embedded_hal_async::spi::SpiDevice;
 
 /// Main driver instance (T01 firmware only)
 ///
-/// For T02 firmware, use [`net::St67w611Device`] with embassy-net instead.
+/// On T02 the equivalent is `crate::Driver` from [`crate::driver_t02`], which
+/// exposes the same `wifi()`/`net()`/`ble()`/`fwu()`/`mqtt()` accessors over
+/// the raw-L2 [`net::xarxa`] link.
 #[cfg(feature = "mission-t01")]
 pub struct Driver<SPI, CS>
 where
@@ -137,12 +168,8 @@ where
     spi: &'static sync::TmMutex<SpiTransport<SPI, CS>>,
     /// AT processor
     processor: &'static AtProcessor,
-    /// WiFi manager
-    wifi: &'static wifi::WiFiManager,
     /// Network device
     network: &'static net::NetworkDevice,
-    /// TLS manager
-    tls: &'static tls::TlsManager,
     /// Configuration
     config: Config,
 }
@@ -157,37 +184,52 @@ where
     ///
     /// Note: This function requires static references to be created by the user
     /// using `make_static!` or similar macros. See examples for details.
+    ///
+    /// TLS is configured through [`Driver::net`] — `configure_ssl`, `set_sni`,
+    /// `set_ssl_psk`, `set_ssl_alpn`, `upload_certificate`, …
     pub fn new(
         spi: &'static sync::TmMutex<SpiTransport<SPI, CS>>,
         processor: &'static AtProcessor,
-        wifi: &'static wifi::WiFiManager,
         network: &'static net::NetworkDevice,
-        tls: &'static tls::TlsManager,
         config: Config,
     ) -> Self {
         Self {
             spi,
             processor,
-            wifi,
             network,
-            tls,
             config,
         }
     }
 
-    /// Initialize WiFi subsystem
-    pub async fn init_wifi(&self, mode: WiFiMode) -> Result<()> {
-        self.wifi.init(self.spi, mode).await
+    /// The transport-generic Wi-Fi client over this driver's AT link.
+    ///
+    /// Replaces the old `wifi_scan` / `get_ip_config` / `get_mac` /
+    /// `get_wifi_state` conveniences. On T02, pass
+    /// [`crate::net::xarxa::Control`] to [`wifi::WiFi::new`] instead.
+    pub fn wifi(&self) -> wifi::WiFi<crate::at::transport::ProcessorTransport<'_, SPI, CS>> {
+        wifi::WiFi::new(crate::at::transport::ProcessorTransport::new(
+            self.processor,
+            self.spi,
+            self.config.command_timeout,
+        ))
     }
 
-    /// Scan for WiFi networks
-    pub async fn wifi_scan(&self) -> Result<ScanResults> {
-        self.wifi.scan(self.spi).await
+    /// Wait for the next unsolicited Wi-Fi event (`WIFI GOT IP`, …).
+    ///
+    /// These are pushed by the module, so they cannot arrive through the
+    /// request/response AT transport.
+    pub async fn next_wifi_event(&self) -> at::processor::WiFiEvent {
+        self.processor.wifi_event_receiver().receive().await
+    }
+
+    /// Initialize the Wi-Fi subsystem.
+    pub async fn init_wifi(&self, mode: WiFiMode) -> Result<()> {
+        self.wifi().set_mode(mode).await
     }
 
     /// Connect to a WiFi access point
     pub async fn wifi_connect(&self, ssid: &str, password: &str) -> Result<()> {
-        let result = self.wifi.connect(self.spi, ssid, password).await;
+        let result = self.wifi().connect(ssid, password).await;
 
         // Update network device link state based on connection result
         if result.is_ok() {
@@ -215,7 +257,7 @@ where
 
     /// Disconnect from WiFi
     pub async fn wifi_disconnect(&self) -> Result<()> {
-        let result = self.wifi.disconnect(self.spi).await;
+        let result = self.wifi().disconnect().await;
 
         // Update network device link state
         self.network.set_link_state(false);
@@ -223,34 +265,21 @@ where
         result
     }
 
-    /// Get current IP configuration
-    pub async fn get_ip_config(&self) -> Result<IpConfig> {
-        self.wifi.get_ip_config(self.spi).await
-    }
-
-    /// Get MAC address
-    pub async fn get_mac(&self) -> Result<MacAddress> {
-        self.wifi.get_mac(self.spi).await
-    }
-
-    /// Get WiFi state
-    pub async fn get_wifi_state(&self) -> WiFiState {
-        self.wifi.get_state().await
-    }
-
     /// Get the network device for direct socket operations
     pub fn network_device(&self) -> &NetworkDevice {
         self.network
     }
 
-    /// Get the TLS manager
-    pub fn tls_manager(&self) -> &tls::TlsManager {
-        self.tls
-    }
-
-    /// Create an MQTT client
-    pub fn mqtt_client(&self, link_id: u8) -> mqtt::MqttClient {
-        mqtt::MqttClient::new(link_id, self.processor, self.config.command_timeout)
+    /// Create an MQTT client over this driver's AT link.
+    ///
+    /// On T02, pass [`crate::net::xarxa::Control`] to
+    /// [`crate::mqtt::Mqtt::new`] instead.
+    pub fn mqtt(&self) -> mqtt::Mqtt<crate::at::transport::ProcessorTransport<'_, SPI, CS>> {
+        mqtt::Mqtt::new(crate::at::transport::ProcessorTransport::new(
+            self.processor,
+            self.spi,
+            self.config.command_timeout,
+        ))
     }
 
     /// Create an HTTP client
@@ -258,19 +287,49 @@ where
         http::HttpClient::new(self.network, self.processor, self.config.command_timeout)
     }
 
-    /// Create a DNS resolver
-    pub fn dns_resolver(&self) -> advanced::DnsResolver {
-        advanced::DnsResolver::new(self.processor, self.config.command_timeout)
+    /// Create a BLE client over this driver's AT link.
+    ///
+    /// The returned [`crate::ble::Ble`] is generic over
+    /// [`crate::at::AtTransport`]; this uses the T01 [`AtProcessor`]-based
+    /// adapter. (On T02, pass [`crate::net::xarxa::Control`] to
+    /// [`crate::ble::Ble::new`] instead.)
+    pub fn ble(
+        &self,
+    ) -> crate::ble::Ble<crate::at::transport::ProcessorTransport<'_, SPI, CS>> {
+        crate::ble::Ble::new(crate::at::transport::ProcessorTransport::new(
+            self.processor,
+            self.spi,
+            self.config.command_timeout,
+        ))
     }
 
-    /// Create an SNTP client
-    pub fn sntp_client(&self) -> advanced::SntpClient {
-        advanced::SntpClient::new(self.processor, self.config.command_timeout)
+    /// Create a firmware-update client over this driver's AT link.
+    ///
+    /// On T02, pass [`crate::net::xarxa::Control`] to
+    /// [`crate::fwu::Fwu::new`] instead.
+    pub fn fwu(
+        &self,
+    ) -> crate::fwu::Fwu<crate::at::transport::ProcessorTransport<'_, SPI, CS>> {
+        crate::fwu::Fwu::new(crate::at::transport::ProcessorTransport::new(
+            self.processor,
+            self.spi,
+            self.config.command_timeout,
+        ))
     }
 
-    /// Create a ping utility
-    pub fn ping(&self) -> advanced::Ping {
-        advanced::Ping::new(self.processor, self.config.command_timeout)
+    /// Create a network configuration/services client over this driver's AT link.
+    ///
+    /// Covers DNS (including typed resolution), SNTP, ping, interface options
+    /// and TCP servers. On T02, pass [`crate::net::xarxa::Control`] to
+    /// [`crate::net::client::Net::new`] instead.
+    pub fn net(
+        &self,
+    ) -> crate::net::client::Net<crate::at::transport::ProcessorTransport<'_, SPI, CS>> {
+        crate::net::client::Net::new(crate::at::transport::ProcessorTransport::new(
+            self.processor,
+            self.spi,
+            self.config.command_timeout,
+        ))
     }
 
     /// Create a power manager
@@ -332,20 +391,15 @@ pub use bus::SpiTransport;
 // T01-specific re-exports
 #[cfg(feature = "mission-t01")]
 pub use http::{HttpClient, HttpMethod, HttpRequest, HttpResponse};
-#[cfg(feature = "mission-t01")]
-pub use mqtt::{MqttClient, MqttConfig, MqttMessage};
+pub use mqtt::{Mqtt, MqttConfig, MqttMessage};
 #[cfg(feature = "mission-t01")]
 pub use net::NetworkDevice;
 #[cfg(feature = "mission-t01")]
 pub use sync::TmMutex;
-#[cfg(feature = "mission-t01")]
-pub use tls::{CertificateType, TlsManager};
-#[cfg(feature = "mission-t01")]
-pub use wifi::WiFiManager;
+pub use net::client::CertificateType;
 
 // T02-specific re-exports
 #[cfg(feature = "mission-t02")]
-pub use net::{
-    new_driver, Capabilities, Medium, PacketBuf, RxToken, SpiFrameHeader, St67w611Device,
-    St67w611Runner, St67w611Transport, State, TrafficType, TxToken, MTU,
-};
+pub use driver_t02::Driver;
+#[cfg(feature = "mission-t02")]
+pub use net::{Control, XarxaRunner, XarxaState, WifiDevice};

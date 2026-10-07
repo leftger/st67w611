@@ -1,30 +1,25 @@
-//! Network layer
+//! Network layer.
 //!
-//! This module provides networking functionality for the ST67W611 module.
+//! Two halves, split along the firmware boundary:
 //!
-//! # Firmware Architectures
-//!
-//! The ST67W611 supports two firmware architectures:
-//!
-//! ## T01 Firmware (default, `mission-t01` feature)
-//!
-//! TCP/IP stack runs on the module. Use AT command-based sockets:
-//! - [`NetworkDevice`] - Socket management via AT commands
-//! - [`Socket`] - Individual socket handle
-//!
-//! ## T02 Firmware (`mission-t02` feature)
-//!
-//! TCP/IP stack runs on the host MCU using embassy-net:
-//! - [`embassy_driver`] - embassy-net driver implementation
-//! - Raw Ethernet frames are exchanged with the module
-//!
-//! # Feature Selection
-//!
-//! Enable exactly one of:
-//! - `mission-t01` (default) - AT command sockets
-//! - `mission-t02` - embassy-net integration
+//! * the **transport-generic clients** ([`Net`]) — interface options, DNS,
+//!   SNTP, ping, TCP servers, TLS options — available on either firmware;
+//! * the **firmware's own stack glue**:
+//!   * T01 (`mission-t01`): the module owns TCP/IP, so [`NetworkDevice`] and
+//!     the AT socket API are the data path;
+//!   * T02 (`mission-t02`): the host owns TCP/IP, so [`xarxa`] provides the
+//!     raw-L2 driver for the xarxa-based `embassy-net` stack.
 
-// T01 firmware: AT command-based sockets
+// Transport-generic high-level client (works on both firmwares)
+pub mod client;
+
+pub use client::Net;
+
+// TLS over any embedded-io-async socket, using `embedded-tls`
+#[cfg(feature = "tls")]
+pub mod tls;
+
+// T01: the module owns TCP/IP — AT command sockets
 #[cfg(feature = "mission-t01")]
 pub mod device;
 #[cfg(feature = "mission-t01")]
@@ -33,12 +28,11 @@ pub mod driver;
 #[cfg(feature = "mission-t01")]
 pub use device::{ConnectionStatus, NetworkDevice, Socket};
 
-// T02 firmware: embassy-net integration
+// T02: the host owns TCP/IP — raw-L2 driver for the xarxa-based embassy-net
 #[cfg(feature = "mission-t02")]
-pub mod embassy_driver;
+pub mod xarxa;
 
 #[cfg(feature = "mission-t02")]
-pub use embassy_driver::{
-    new_driver, Capabilities, Medium, PacketBuf, RxToken, SpiFrameHeader, St67w611Device,
-    St67w611Runner, St67w611Transport, State, TrafficType, TxToken, MTU,
+pub use xarxa::{
+    AtOutput, AtStatus, Control, Runner as XarxaRunner, State as XarxaState, WifiDevice,
 };

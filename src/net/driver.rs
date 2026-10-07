@@ -1,39 +1,24 @@
 //! Network driver notes
 //!
-//! ## Why This Driver Does NOT Support embassy-net
+//! ## Choosing between T01 and T02
 //!
-//! ### Hardware Constraint
+//! The module runs one of two firmware architectures, selected at build time
+//! with a Cargo feature.
 //!
-//! The ST67W611 module has a maximum SPI clock of **30MHz**, providing:
-//! - Theoretical throughput: ~3.75 MB/s
-//! - Practical throughput: ~1-2 MB/s (with AT protocol overhead)
+//! ### T01 — TCP/IP on the module (`mission-t01`, default)
 //!
-//! Meanwhile, WiFi 802.11n can provide **10-100+ Mbps** (1.25-12.5 MB/s).
+//! The module owns the TCP/IP stack and the host drives it with AT commands.
+//! Use the socket-based APIs provided by this crate:
 //!
-//! **SPI is the bottleneck, not WiFi.**
+//! * [`crate::net::NetworkDevice`] for raw TCP/UDP/SSL sockets,
+//! * [`crate::http::HttpClient`] for HTTP/HTTPS,
+//! * [`crate::mqtt::Mqtt`] for MQTT.
 //!
-//! ### Why Transparent Mode Would Be Inefficient
+//! This is the recommended path for most applications: only application data
+//! crosses SPI, so the 30 MHz link is not saturated by per-packet headers,
+//! ACKs or retransmissions.
 //!
-//! If the module forwarded raw IP packets over SPI:
-//! - Every packet would include IP/TCP/UDP headers (~40-60 bytes)
-//! - ACKs, retransmissions, and control packets would consume SPI bandwidth
-//! - Protocol processing overhead would saturate the 30MHz SPI link
-//! - Actual application throughput would be severely limited
-//!
-//! ### Why Built-in TCP/IP Stack Is The Right Design
-//!
-//! The module's built-in TCP/IP stack:
-//! - Processes all protocols **locally** on the module
-//! - Only application data crosses SPI
-//! - Eliminates protocol overhead from SPI transfers
-//! - Maximizes effective throughput for your application
-//! - This is **optimal given the hardware constraints**
-//!
-//! ### Correct Usage Pattern
-//!
-//! Use the socket-based APIs provided by this driver:
-//!
-//! ```rust
+//! ```ignore
 //! // TCP/UDP sockets
 //! let socket = device.allocate_socket(SocketProtocol::Tcp).await?;
 //! device.connect_socket(spi, socket, "host", 80, timeout).await?;
@@ -49,13 +34,18 @@
 //! mqtt.publish(spi, "topic", "data", qos, false).await?;
 //! ```
 //!
-//! ### Summary
+//! ### T02 — TCP/IP on the host (`mission-t02`)
 //!
-//! This driver does NOT implement `embassy_net::driver::Driver` because:
-//! 1. SPI bandwidth limitations make transparent mode impractical
-//! 2. The module's built-in TCP/IP stack is the correct architecture
-//! 3. Socket-based APIs are more efficient and fully featured
+//! The host runs the TCP/IP stack and the module acts as a WiFi MAC/PHY,
+//! forwarding raw Ethernet frames (the same "direct link" architecture ST ships
+//! as the `ST67W6X_CLI_LWIP` reference application).
 //!
-//! If you need embassy-net compatibility, this is not the right WiFi module for your project.
-//! Consider modules with higher-speed interfaces (SDIO, USB, etc.) that can support
-//! transparent packet mode.
+//! Use [`crate::net::xarxa`], which plugs the module into `embassy-net`:
+//! IPv4, IPv6, TCP, UDP, DHCP, DNS/mDNS, SLAAC, multicast and ICMP all come
+//! from the stack, and `embedded-tls` can be layered on top of a TCP socket.
+//!
+//! The trade-off is real: at 30 MHz the SPI link caps out at roughly
+//! 1–2 MB/s, well under what WiFi could deliver, and now the host has to move
+//! every header and ACK across it too. Choose T02 when you need the stack's
+//! features (IPv6, TLS on the host, custom routing) or must interoperate with
+//! existing `embassy-net` code, and T01 when you want the most throughput.

@@ -16,8 +16,8 @@ embassy-sync = "0.7"
 embassy-futures = "0.1"
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
-embedded-io = "0.6"
-embedded-io-async = "0.6"
+embedded-io = "0.7"
+embedded-io-async = "0.7"
 heapless = { version = "0.8", default-features = false }
 static_cell = "2"
 
@@ -25,17 +25,50 @@ static_cell = "2"
 defmt = { version = "1.0", optional = true }
 log = { version = "0.4", optional = true }
 
-# embassy-net support (T02 firmware only)
-embassy-net-driver = { version = "0.2.0", optional = true }
+# TLS over embassy-net TCP. `embedded-tls` 0.19 speaks `embedded-io-async` 0.7,
+# the same version embassy-net uses, so it wraps a `TcpSocket` directly.
+embedded-tls = { version = "0.19", optional = true, default-features = false }
+
+# Xarxa-based embassy-net for the T02 raw-L2 driver.
+#
+# crates.io embassy-net 0.9.1 is still smoltcp-based; the xarxa migration only
+# exists in the embassy git repository (branch `feat/n6-drivers` /
+# `upstream/update-xarxa5`). Until it is released, this points at the local
+# checkout. Switch to plain `version = "0.9"` once xarxa ships on crates.io.
+embassy-net = { version = "0.9.1", path = "/home/usuario/Projects/embassy-project/embassy/embassy-net", optional = true, default-features = false, features = [
+    "medium-ethernet",
+    "ipv4",
+    "ipv6",
+    "tcp",
+    "udp",
+    "dhcpv4",
+    "dns",
+] }
+embassy-net-driver-channel = { version = "0.4.0", path = "/home/usuario/Projects/embassy-project/embassy/embassy-net-driver-channel", optional = true }
 
 [dev-dependencies]
+# (intentionally empty: see the target-scoped block below)
+
+# Embedded-only dependencies (examples and on-target tests). Scoping them to
+# 32-bit ARM keeps `cargo test --lib` runnable on the host, where cortex-m and
+# embassy-stm32 cannot be built.
+[target.'cfg(target_arch = "arm")'.dev-dependencies]
 # STM32WBA55CG dependencies
 embassy-stm32 = { version = "0.5.0", features = ["defmt", "stm32wba55cg", "time-driver-any", "memory-x", "exti"] }
 embassy-executor = { version = "0.9.0", features = ["arch-cortex-m", "executor-thread", "defmt"] }
 embassy-time = { version = "0.5.0", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
 embassy-sync = { version = "0.7.2", features = ["defmt"] }
 embassy-futures = { version = "0.1.2" }
-embassy-net = { version = "0.8.0", features = ["defmt", "tcp", "dhcpv4", "medium-ethernet"] }
+embassy-net = { version = "0.9.1", path = "/home/usuario/Projects/embassy-project/embassy/embassy-net", features = [
+    "defmt",
+    "tcp",
+    "udp",
+    "dhcpv4",
+    "dns",
+    "ipv4",
+    "ipv6",
+    "medium-ethernet",
+] }
 cortex-m = { version = "0.7.6", features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = "0.7.0"
 embedded-hal = "1.0.0"
@@ -44,17 +77,21 @@ embedded-hal-bus = { version = "0.3.0", features = ["async"] }
 defmt = "1.0.1"
 defmt-rtt = "1.0.0"
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
-heapless = "0.8"
-static_cell = "2"
 
 [features]
 default = ["mission-t01"]
 
-# Firmware architecture selection (mutually exclusive)
-# T01: TCP/IP stack runs on the ST67W611 module (AT command sockets)
-# T02: TCP/IP stack runs on the host MCU (embassy-net integration)
+# Firmware architecture selection (exactly one).
+#
+# T01: the module owns TCP/IP; the host drives AT sockets.
+# T02: the host owns TCP/IP; the module provides raw L2 frames and the
+#      xarxa-based `embassy-net` stack runs on top.
 mission-t01 = []
-mission-t02 = ["dep:embassy-net-driver"]
+mission-t02 = ["dep:embassy-net", "dep:embassy-net-driver-channel"]
+
+# TLS client (`embedded-tls`) over any embedded-io-async socket, so it works on
+# either firmware.
+tls = ["dep:embedded-tls"]
 
 # Logging
 defmt = ["dep:defmt", "embassy-executor/defmt", "embassy-sync/defmt", "embassy-time/defmt", "heapless/defmt-03"]
@@ -103,3 +140,17 @@ incremental = false
 lto = "fat"
 opt-level = "z"
 overflow-checks = false
+
+# TEMPORARY, local-development only.
+#
+# The xarxa-based embassy-net is not on crates.io yet, so the `embassy-net` /
+# `embassy-net-driver-channel` dependencies above point at a local embassy
+# checkout. That checkout's `embassy-time` uses a *path* dependency on
+# `embassy-time-driver`, which cannot coexist with the crates.io copy (both
+# declare `links = "embassy-time"`). Patching both to the checkout unifies them.
+#
+# Remove this section, and switch the dependencies above to version
+# requirements, once xarxa is released. It must not ship in a published crate.
+[patch.crates-io]
+embassy-time = { path = "/home/usuario/Projects/embassy-project/embassy/embassy-time" }
+embassy-time-driver = { path = "/home/usuario/Projects/embassy-project/embassy/embassy-time-driver" }
