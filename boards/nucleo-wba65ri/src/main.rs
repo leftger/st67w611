@@ -124,6 +124,10 @@ async fn rdy_task(
         if now_high != last {
             last = now_high;
             level.store(now_high, Ordering::Relaxed);
+            // Bring-up tracing: the RDY waveform. If the module never raises RDY
+            // again after its boot banner, the host has nothing to wait for and
+            // every command blocks - so this line is the measurement that matters.
+            info!("RDY -> {}", now_high);
             signal.signal(());
         }
     }

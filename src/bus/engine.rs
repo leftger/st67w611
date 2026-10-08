@@ -49,6 +49,13 @@ pub const MSG_XFER_TIMEOUT: Duration = Duration::from_millis(500);
 /// `SPI_WAIT_HDR_ACK_TIMEOUT_MS` in `spi_port.h`.
 pub const HDR_ACK_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// How long to wait for RDY before clocking the module anyway.
+///
+/// ST waits indefinitely (`SPI_WAIT_TXN_TIMEOUT_MS` = 2000 ms) and treats a
+/// timeout as an error, but the module we have only asserts RDY once at boot, so
+/// an unbounded wait simply deadlocks. See the comment in `exchange`.
+pub const RDY_WAIT: Duration = Duration::from_millis(50);
+
 /// How many read-only frames to clock while the peer reports its RX stalled
 /// before giving up on ever getting our own frame out.
 pub const STALL_DRAIN_MAX: usize = 4;
@@ -282,12 +289,23 @@ where
         // (For the record I got this wrong twice: first by dropping the wait for
         // sends entirely, then by treating the event as a latched one-shot. The
         // pdTRUE above is what settles it.)
+        // ...but bounded, and we proceed anyway if it never comes.
+        //
+        // Measured on hardware: the module asserts RDY for about 366 us, once, at
+        // boot - to announce the "ready" banner - and never again. Waiting for it
+        // per-transaction therefore deadlocks, which is exactly what we saw: one
+        // exchange works and every later one blocks until its timeout. A healthy
+        // module under ST's driver presumably re-asserts RDY per transaction, but
+        // ours demonstrably does not, so we wait only briefly and then clock it
+        // regardless. Clocking a not-ready module yields garbage headers rather
+        // than a hang, and the AT layer already retries until its deadline, so a
+        // late answer is still recovered.
         if !self.rdy_level.load(Ordering::Acquire) {
-            let deadline = Instant::now() + TXN_READY_TIMEOUT;
+            let deadline = Instant::now() + RDY_WAIT;
             while !self.rdy_level.load(Ordering::Acquire) {
                 let now = Instant::now();
                 if now >= deadline {
-                    return Err(Error::Timeout);
+                    break;
                 }
                 let _ = with_timeout(deadline - now, self.ready.wait()).await;
             }
