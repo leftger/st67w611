@@ -1,0 +1,45 @@
+[package]
+name = "nucleo-wba65ri"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone board crate: `embassy-stm32` allows exactly one chip feature.
+#
+# Why this board: on the STM32N6570-DK the USB-C cable physically blocks the
+# ST67 module from seating on the Arduino header, which left the header contacts
+# marginal and the module behaving erratically (see the N6 board crate for the
+# full trail). The NUCLEO-WBA65RI has the same Arduino header positions free.
+#
+# embassy deps are pinned to a `rev` of embassy-rs/embassy rather than a crates.io
+# release, and every embassy crate must come from the same source — mixing
+# sources yields two distinct `embassy_time`/`embassy_sync` types.
+[dependencies]
+st67w611 = { path = "../..", default-features = false, features = ["mission-t02", "defmt"] }
+
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["platform-cortex-m", "executor-thread", "defmt"] }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["defmt"] }
+# `memory-x` generates memory.x from the metapac, so there is no hand-written
+# linker script to get wrong (unlike the N6, which needed a very specific
+# boot-ROM dev-mode window).
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7", features = ["defmt", "stm32wba65ri", "time-driver-any", "memory-x", "exti"] }
+
+embedded-hal = "1.0"
+embedded-hal-async = "1.0"
+
+cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7"
+defmt = "1.0"
+defmt-rtt = "1.0"
+panic-probe = { version = "1.0", features = ["print-defmt"] }
+static_cell = "2"
+
+# Force anything still asking for embassy-time from crates.io onto the same rev.
+[patch.crates-io]
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "63534e7971c4a6cbe4ceb9987fe6f853462040f7" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+debug = 2

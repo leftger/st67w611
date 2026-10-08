@@ -148,10 +148,6 @@ pub struct Engine<SPI, CS> {
     ready: &'static Signal<CriticalSectionRawMutex, ()>,
     hdr_ack: &'static Signal<CriticalSectionRawMutex, ()>,
     rdy_level: &'static AtomicBool,
-    /// Latched: the module has asserted RDY at least once.
-    ///
-    /// ST latches this too - see the comment in `exchange`.
-    rdy_latched: bool,
     rx_stall: bool,
     tx_scratch: [u8; SCRATCH],
     rx_scratch: [u8; SCRATCH],
@@ -176,7 +172,6 @@ where
             ready,
             hdr_ack,
             rdy_level,
-            rdy_latched: false,
             rx_stall: false,
             tx_scratch: [0; SCRATCH],
             rx_scratch: [0; SCRATCH],
@@ -265,25 +260,29 @@ where
             }
         }
 
-        // Wait for RDY — but only ONCE, ever.
+        // Wait for the module to be ready for a transaction, unless RDY is
+        // already high.
         //
-        // In ST's engine SPI_EVT_TXN_RDY is set by the RDY pin ISR (and at init
-        // if the pin is already high) and is NEVER cleared: the sole
-        // spi_clear_event() call clears SPI_EVT_HW_XFER_DONE | SPI_EVT_HDR_ACKED,
-        // not TXN_RDY. So spi_xfer_one()'s wait on it blocks only until the
-        // module's first assertion, and every transfer after that proceeds
-        // immediately.
+        // ST's engine task waits on (SPI_EVT_TXN_PENDING | SPI_EVT_TXN_RDY) with
+        // xClearOnExit = pdTRUE, so whichever bit woke it is CONSUMED:
         //
-        // Gating every exchange on the RDY *level* instead deadlocks: the module
-        // raises RDY once to announce itself and then drops it, so after the first
-        // exchange nothing is ever ready and every command times out. That is
-        // precisely the failure we have been chasing - only the first exchange
-        // after boot ever worked.
+        //   if (bits & SPI_EVT_TXN_RDY)  spi_do_xfer(engine, SKIP_FIRST_TXN_WAIT);
+        //   else if (bits & TXN_PENDING) spi_do_xfer(engine, 0);
         //
-        // Note this also explains spi_do_xfer's `(txbuf != NULL) || (rx_pending
-        // == 1)`: rx_pending is only consulted to decide whether a receive-only
-        // pass is worth starting, not as a permission gate for sending.
-        if !self.rdy_latched {
+        // TXN_RDY means the module asserted RDY (it has something to send), and
+        // TXN_PENDING means the host queued a frame. spi_xfer_one() then waits on
+        // TXN_RDY whenever wait_txn_rdy != 0. So a host-initiated send waits for
+        // the module to assert RDY, while a module-initiated transfer skips the
+        // wait precisely because that bit was just consumed waking the task.
+        //
+        // "Wait for RDY unless it is already high" is therefore the faithful
+        // behaviour — which is also what the module expects: it raises RDY when it
+        // is able to take a transaction.
+        //
+        // (For the record I got this wrong twice: first by dropping the wait for
+        // sends entirely, then by treating the event as a latched one-shot. The
+        // pdTRUE above is what settles it.)
+        if !self.rdy_level.load(Ordering::Acquire) {
             let deadline = Instant::now() + TXN_READY_TIMEOUT;
             while !self.rdy_level.load(Ordering::Acquire) {
                 let now = Instant::now();
@@ -292,7 +291,6 @@ where
                 }
                 let _ = with_timeout(deadline - now, self.ready.wait()).await;
             }
-            self.rdy_latched = true;
         }
 
         // Mandatory inter-transfer gap. ST's port refuses to assert CS until at
