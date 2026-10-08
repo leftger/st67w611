@@ -211,6 +211,34 @@ async fn main(spawner: Spawner) {
         error!("module never became responsive");
     }
 
+    // Which firmware is actually flashed? This is the definitive test, and ST's
+    // own W6X_Init branches on exactly it (Core/w6x_sys.c):
+    //
+    //   1 = TCP/IP on the NCP   -> T01, AT sockets, the module owns the stack
+    //   0 = TCP/IP on the host  -> T02, raw L2, which is what xarxa wants
+    info!("step: asking the module which firmware it runs ...");
+    match control.at("AT+CWNETMODE?").await {
+        Ok(out) => {
+            info!("  +CWNETMODE ok={}, {} line(s)", out.is_ok(), out.lines.len());
+            for line in out.lines.iter() {
+                info!("      |{}|", line.as_str());
+            }
+        }
+        Err(e) => error!("  +CWNETMODE query failed: {:?}", e),
+    }
+
+    // AT+GMR carries the image identification (we previously saw
+    // "SW image:spi_wifi_lwip_onhost", which reads as lwip-on-host = T02).
+    match control.at("AT+GMR").await {
+        Ok(out) => {
+            info!("  +GMR ok={}, {} line(s)", out.is_ok(), out.lines.len());
+            for line in out.lines.iter() {
+                info!("      |{}|", line.as_str());
+            }
+        }
+        Err(e) => error!("  +GMR failed: {:?}", e),
+    }
+
     for i in 0..5 {
         match control.at("AT").await {
             Ok(out) => info!("  AT[{}] -> ok={}, {} line(s)", i, out.is_ok(), out.lines.len()),
