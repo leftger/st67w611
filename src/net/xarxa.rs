@@ -156,6 +156,8 @@ pub struct State<const N_RX: usize, const N_TX: usize> {
     ch: ch::State<N_RX, N_TX>,
     at_req: Channel<CriticalSectionRawMutex, AtRequest, 1>,
     at_resp: Signal<CriticalSectionRawMutex, AtOutput>,
+    /// Signalled when the module announces, unsolicited, that it has booted.
+    ready_announced: Signal<CriticalSectionRawMutex, ()>,
 }
 
 impl<const N_RX: usize, const N_TX: usize> State<N_RX, N_TX> {
@@ -165,6 +167,7 @@ impl<const N_RX: usize, const N_TX: usize> State<N_RX, N_TX> {
             ch: ch::State::new(),
             at_req: Channel::new(),
             at_resp: Signal::new(),
+            ready_announced: Signal::new(),
         }
     }
 }
@@ -179,6 +182,7 @@ impl<const N_RX: usize, const N_TX: usize> Default for State<N_RX, N_TX> {
 pub struct Control<'d> {
     at_req: &'d Channel<CriticalSectionRawMutex, AtRequest, 1>,
     at_resp: &'d Signal<CriticalSectionRawMutex, AtOutput>,
+    ready_announced: &'d Signal<CriticalSectionRawMutex, ()>,
     /// Lets the control plane report Wi-Fi link state to embassy-net.
     state: ch::StateRunner<'d>,
     timeout: Duration,
@@ -188,6 +192,27 @@ impl<'d> Control<'d> {
     /// Override the per-transaction timeout.
     pub fn set_timeout(&mut self, timeout: Duration) {
         self.timeout = timeout;
+    }
+
+    /// Wait for the module to announce that it has finished booting.
+    ///
+    /// The module announces readiness as an **unsolicited AT line** — `ready` —
+    /// sent over the SPI link. ST's driver blocks on exactly that event
+    /// (`on_cmd_ready` gives `sem_if_ready`, which `W61_WaitForReady` waits on)
+    /// and then waits a further 100 ms, commenting that it needs "to ensure the
+    /// module is fully operational" before anything is sent.
+    ///
+    /// Call this after power-on/reset, before the first command. It must be
+    /// called before the module is talked to, because the announcement is only
+    /// observed while the runner is polling the link.
+    pub async fn wait_ready(&self, timeout: Duration) -> Result<()> {
+        with_timeout(timeout, self.ready_announced.wait())
+            .await
+            .map_err(|_| Error::Timeout)?;
+        // ST: "Need to wait after catching ready event to ensure module is fully
+        // operational."
+        Timer::after(Duration::from_millis(100)).await;
+        Ok(())
     }
 
     /// Send an AT command and wait for its terminal response.
@@ -294,6 +319,7 @@ pub struct Runner<'d, SPI, CS, const N_RX: usize, const N_TX: usize> {
     ch: ch::Runner<'d>,
     at_req: &'d Channel<CriticalSectionRawMutex, AtRequest, 1>,
     at_resp: &'d Signal<CriticalSectionRawMutex, AtOutput>,
+    ready_announced: &'d Signal<CriticalSectionRawMutex, ()>,
     ready: &'static Signal<CriticalSectionRawMutex, ()>,
     rx: [u8; RX_SCRATCH],
     // AT transaction scratch.
@@ -330,18 +356,20 @@ where
     SPI: SpiBus,
     CS: OutputPin,
 {
-    let State { ch, at_req, at_resp } = state;
+    let State { ch, at_req, at_resp, ready_announced } = state;
     let (ch_runner, device) = ch::new(ch, HardwareAddress::Ethernet(mac), MTU);
     let state_runner = ch_runner.state_runner();
 
     let at_req: &Channel<_, _, 1> = at_req;
     let at_resp: &Signal<_, _> = at_resp;
+    let ready_announced: &Signal<_, _> = ready_announced;
 
     let runner = Runner {
         engine: Engine::new(spi, cs, ready, hdr_ack, rdy_level),
         ch: ch_runner,
         at_req,
         at_resp,
+        ready_announced,
         ready,
         rx: [0; RX_SCRATCH],
         at_buf: LineBuffer::new(),
@@ -353,6 +381,7 @@ where
     let control = Control {
         at_req,
         at_resp,
+        ready_announced,
         state: state_runner,
         timeout: AT_TIMEOUT,
     };
@@ -403,6 +432,7 @@ where
         // while the AT parser waits forever — which matches the symptom exactly
         // (the boot banner is parsed, command replies never are).
         let shown = recv.len.min(64);
+        #[cfg(feature = "defmt")]
         defmt::trace!(
             "rx: type={:?} len={} bytes={=[u8]}",
             recv.traffic_type(),
@@ -435,18 +465,37 @@ where
 
     /// Feed received AT bytes into the line parser.
     fn feed_at(&mut self, len: usize) {
-        if !self.at_active {
-            // Unsolicited event outside a transaction; ignored for now.
-            return;
-        }
+        // Note: lines are parsed whether or not a transaction is in flight. The
+        // module announces its boot with an *unsolicited* "ready" line, and ST's
+        // driver waits on exactly that before it will talk to the module at all
+        // (on_cmd_ready -> sem_if_ready -> W61_WaitForReady). Dropping
+        // out-of-transaction lines meant we could never see that announcement.
         for i in 0..len {
             let b = self.rx[i];
             if b == b'\n' {
-                self.finish_at_line();
+                if self.at_active {
+                    self.finish_at_line();
+                } else {
+                    self.finish_unsolicited_line();
+                }
             } else if b != b'\r' {
                 let _ = self.at_buf.push(b as char);
             }
         }
+    }
+
+    /// Handle one complete AT line that arrived outside any transaction.
+    ///
+    /// The only one that matters to us is the module's boot announcement.
+    fn finish_unsolicited_line(&mut self) {
+        if !self.at_buf.is_empty() {
+            #[cfg(feature = "defmt")]
+            defmt::trace!("unsolicited line: |{}|", self.at_buf.as_str());
+            if self.at_buf.starts_with("ready") {
+                self.ready_announced.signal(());
+            }
+        }
+        self.at_buf.clear();
     }
 
     /// Parse and route one complete AT line.
@@ -455,6 +504,7 @@ where
             return;
         }
         // Bring-up tracing: what the module actually said, line by line.
+        #[cfg(feature = "defmt")]
         defmt::trace!("at line: |{}|", self.at_buf.as_str());
         if let Ok(Some(resp)) = parser::parse_line(&self.at_buf) {
             match resp {
@@ -497,6 +547,7 @@ where
 
         // Bring-up tracing: which command starts, with which budget. The command
         // is truncated so a password never reaches the log.
+        #[cfg(feature = "defmt")]
         defmt::trace!(
             "at start: cmd={=[u8]} len={} timeout={}ms",
             &command[..command.len().min(16)],
@@ -511,12 +562,16 @@ where
             .await
         {
             Ok(recv) => {
+                #[cfg(feature = "defmt")]
                 defmt::trace!("at send ok: rx_len={}", recv.len);
                 self.on_received(recv);
             }
             // Previously swallowed: if the command frame never got out, the
             // module cannot answer and the transaction just times out silently.
-            Err(e) => defmt::trace!("at send ERR: {:?}", e),
+            Err(e) => {
+                #[cfg(feature = "defmt")]
+                defmt::trace!("at send ERR: {:?}", e);
+            }
         }
 
         let deadline = Instant::now() + timeout;
@@ -552,6 +607,7 @@ where
             }
         }
 
+        #[cfg(feature = "defmt")]
         defmt::trace!(
             "at transaction done: status={} lines={}",
             match self.at_status {

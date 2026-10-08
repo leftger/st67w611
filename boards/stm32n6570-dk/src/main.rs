@@ -354,19 +354,45 @@ async fn main(spawner: Spawner) {
     // Park the device: alive, but with no stack attached to transmit through it.
     let _device: &'static mut WifiDevice<'static> = DEVICE.init(device);
 
-    // EXPERIMENT: the module clearly boots and prints "ready", but it takes
-    // longer than we were allowing. So give it a generous settle, then find out
-    // whether it answers REPEATEDLY or only once. That is the question that
-    // decides everything:
+    // Follow ST's boot sequence properly now. `W61_AT_ModemInit` does:
     //
-    //  - five OKs  -> the link is fine and we simply were not waiting for the
-    //                 module to finish booting; the fix is a readiness check.
-    //  - one OK    -> the module wedges after the first transaction, and the
-    //                 fault is on its side of the wire.
+    //   io_init() -> modem task -> W61_WaitForReady(timeout) -> AT\r\n
+    //
+    // and W61_WaitForReady blocks on a semaphore given by `on_cmd_ready`, i.e. by
+    // the module sending its *unsolicited* "ready" line, then waits a further
+    // 100 ms. Only then does it send anything.
+    //
+    // But the module announces `ready` more than once: an early one shortly
+    // after reset, and again roughly 30 s later when it is actually able to take
+    // commands. Waiting for only the first announcement is not enough, so wait
+    // for a `ready` and probe with `AT`, repeating until the module answers.
     reset_module(&mut en).await;
-    info!("step: settling 2 s so the module finishes booting ...");
-    Timer::after_millis(2000).await;
+    info!("step: waiting for the module to become responsive ...");
+    let mut responsive = false;
+    for attempt in 0..8 {
+        if control.wait_ready(Duration::from_secs(15)).await.is_err() {
+            info!("  no `ready` announcement yet (attempt {})", attempt + 1);
+            continue;
+        }
+        match control.at("AT").await {
+            Ok(out) if out.is_ok() => {
+                info!("  module responsive after {} `ready` announcement(s)", attempt + 1);
+                responsive = true;
+                break;
+            }
+            Ok(out) => info!(
+                "  announced ready but did not answer (attempt {}, ok={})",
+                attempt + 1,
+                out.is_ok()
+            ),
+            Err(e) => info!("  probe failed (attempt {}): {:?}", attempt + 1, e),
+        }
+    }
+    if !responsive {
+        error!("module never became responsive");
+    }
 
+    // Now that it answers, this should succeed repeatedly.
     for i in 0..5 {
         match control.at("AT").await {
             Ok(out) => {

@@ -260,30 +260,28 @@ where
             }
         }
 
-        // RDY means "the module has data for us", NOT "you may send".
+        // Wait for the module to be ready for a transaction — for EVERY transfer,
+        // sends included.
         //
-        // ST's engine transfers when it has a frame to send OR RDY is high
-        // (spi_do_xfer: `if ((txbuf != NULL) || (rx_pending == 1))`), and the
-        // port function it consults is literally called spi_port_is_ready() and
-        // just reads the pin. So RDY only decides whether there is data to FETCH.
+        // I previously changed this to gate only receive-only exchanges, having
+        // misread spi_do_xfer: its `(txbuf != NULL) || (rx_pending == 1)` is only
+        // the condition for *entering* the loop, not the readiness test. Inside,
+        // spi_xfer_one() waits for SPI_EVT_TXN_RDY whenever wait_txn_rdy != 0 —
+        // which is the default; SPI_XFER_F_SKIP_FIRST_TXN_WAIT exists solely to
+        // skip that wait for the very first transaction. And SPI_EVT_TXN_RDY is
+        // set by the RDY pin ISR (spi_on_txn_data_ready on the rising edge) and at
+        // init if the pin is already high.
         //
-        // Gating a send on RDY deadlocks: the module keeps RDY low because it has
-        // nothing to send — it is waiting for our command — so the command never
-        // leaves the host. That is exactly why the first exchange after boot
-        // worked (the boot banner was pending, so RDY was high) and every command
-        // after it stalled for 2 s and failed.
-        //
-        // Only a receive-only exchange waits for RDY, and it re-checks the level
-        // after every wake-up rather than trusting a single signal.
-        if tx.is_none() {
-            let deadline = Instant::now() + TXN_READY_TIMEOUT;
-            while !self.rdy_level.load(Ordering::Acquire) {
-                let now = Instant::now();
-                if now >= deadline {
-                    return Err(Error::Timeout);
-                }
-                let _ = with_timeout(deadline - now, self.ready.wait()).await;
+        // So RDY means "the module will accept a transaction now", and the
+        // correct behaviour is to gate everything on it. Re-check the level after
+        // every wake-up rather than trusting a single signal.
+        let deadline = Instant::now() + TXN_READY_TIMEOUT;
+        while !self.rdy_level.load(Ordering::Acquire) {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(Error::Timeout);
             }
+            let _ = with_timeout(deadline - now, self.ready.wait()).await;
         }
 
         // Mandatory inter-transfer gap. ST's port refuses to assert CS until at
