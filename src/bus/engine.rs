@@ -148,6 +148,10 @@ pub struct Engine<SPI, CS> {
     ready: &'static Signal<CriticalSectionRawMutex, ()>,
     hdr_ack: &'static Signal<CriticalSectionRawMutex, ()>,
     rdy_level: &'static AtomicBool,
+    /// Latched: the module has asserted RDY at least once.
+    ///
+    /// ST latches this too - see the comment in `exchange`.
+    rdy_latched: bool,
     rx_stall: bool,
     tx_scratch: [u8; SCRATCH],
     rx_scratch: [u8; SCRATCH],
@@ -172,6 +176,7 @@ where
             ready,
             hdr_ack,
             rdy_level,
+            rdy_latched: false,
             rx_stall: false,
             tx_scratch: [0; SCRATCH],
             rx_scratch: [0; SCRATCH],
@@ -260,28 +265,34 @@ where
             }
         }
 
-        // Wait for the module to be ready for a transaction — for EVERY transfer,
-        // sends included.
+        // Wait for RDY — but only ONCE, ever.
         //
-        // I previously changed this to gate only receive-only exchanges, having
-        // misread spi_do_xfer: its `(txbuf != NULL) || (rx_pending == 1)` is only
-        // the condition for *entering* the loop, not the readiness test. Inside,
-        // spi_xfer_one() waits for SPI_EVT_TXN_RDY whenever wait_txn_rdy != 0 —
-        // which is the default; SPI_XFER_F_SKIP_FIRST_TXN_WAIT exists solely to
-        // skip that wait for the very first transaction. And SPI_EVT_TXN_RDY is
-        // set by the RDY pin ISR (spi_on_txn_data_ready on the rising edge) and at
-        // init if the pin is already high.
+        // In ST's engine SPI_EVT_TXN_RDY is set by the RDY pin ISR (and at init
+        // if the pin is already high) and is NEVER cleared: the sole
+        // spi_clear_event() call clears SPI_EVT_HW_XFER_DONE | SPI_EVT_HDR_ACKED,
+        // not TXN_RDY. So spi_xfer_one()'s wait on it blocks only until the
+        // module's first assertion, and every transfer after that proceeds
+        // immediately.
         //
-        // So RDY means "the module will accept a transaction now", and the
-        // correct behaviour is to gate everything on it. Re-check the level after
-        // every wake-up rather than trusting a single signal.
-        let deadline = Instant::now() + TXN_READY_TIMEOUT;
-        while !self.rdy_level.load(Ordering::Acquire) {
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(Error::Timeout);
+        // Gating every exchange on the RDY *level* instead deadlocks: the module
+        // raises RDY once to announce itself and then drops it, so after the first
+        // exchange nothing is ever ready and every command times out. That is
+        // precisely the failure we have been chasing - only the first exchange
+        // after boot ever worked.
+        //
+        // Note this also explains spi_do_xfer's `(txbuf != NULL) || (rx_pending
+        // == 1)`: rx_pending is only consulted to decide whether a receive-only
+        // pass is worth starting, not as a permission gate for sending.
+        if !self.rdy_latched {
+            let deadline = Instant::now() + TXN_READY_TIMEOUT;
+            while !self.rdy_level.load(Ordering::Acquire) {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(Error::Timeout);
+                }
+                let _ = with_timeout(deadline - now, self.ready.wait()).await;
             }
-            let _ = with_timeout(deadline - now, self.ready.wait()).await;
+            self.rdy_latched = true;
         }
 
         // Mandatory inter-transfer gap. ST's port refuses to assert CS until at
