@@ -158,6 +158,9 @@ pub struct State<const N_RX: usize, const N_TX: usize> {
     at_resp: Signal<CriticalSectionRawMutex, AtOutput>,
     /// Signalled when the module announces, unsolicited, that it has booted.
     ready_announced: Signal<CriticalSectionRawMutex, ()>,
+    /// Delivers a finished scan: the module streams `+CWLAP` lines outside the
+    /// command transaction and ends them with `+CW:SCAN_DONE`.
+    scan_done: Signal<CriticalSectionRawMutex, AtOutput>,
 }
 
 impl<const N_RX: usize, const N_TX: usize> State<N_RX, N_TX> {
@@ -168,6 +171,7 @@ impl<const N_RX: usize, const N_TX: usize> State<N_RX, N_TX> {
             at_req: Channel::new(),
             at_resp: Signal::new(),
             ready_announced: Signal::new(),
+            scan_done: Signal::new(),
         }
     }
 }
@@ -183,6 +187,7 @@ pub struct Control<'d> {
     at_req: &'d Channel<CriticalSectionRawMutex, AtRequest, 1>,
     at_resp: &'d Signal<CriticalSectionRawMutex, AtOutput>,
     ready_announced: &'d Signal<CriticalSectionRawMutex, ()>,
+    scan_done: &'d Signal<CriticalSectionRawMutex, AtOutput>,
     /// Lets the control plane report Wi-Fi link state to embassy-net.
     state: ch::StateRunner<'d>,
     timeout: Duration,
@@ -310,7 +315,18 @@ impl<'d> Control<'d> {
     /// The results are returned as raw information lines in
     /// [`AtOutput::lines`].
     pub async fn scan(&self) -> Result<AtOutput> {
-        self.exchange(AtRequest::command("AT+CWLAP=0,,,0", SCAN_TIMEOUT)?).await
+        // Drop a result left over from an earlier sweep.
+        let _ = self.scan_done.try_take();
+        let out = self
+            .exchange(AtRequest::command("AT+CWLAP=0,,,0", SCAN_TIMEOUT)?)
+            .await?;
+        // The module acknowledges the command at once and then streams the
+        // results as unsolicited `+CWLAP` lines, finishing with
+        // `+CW:SCAN_DONE`; that is where the useful data arrives.
+        match with_timeout(SCAN_TIMEOUT, self.scan_done.wait()).await {
+            Ok(scan) => Ok(scan),
+            Err(_) => Ok(out),
+        }
     }
 
     /// Enable or disable IPv6 on the station interface (`AT+CIPV6`).
@@ -351,11 +367,14 @@ pub struct Runner<'d, SPI, CS, const N_RX: usize, const N_TX: usize> {
     at_req: &'d Channel<CriticalSectionRawMutex, AtRequest, 1>,
     at_resp: &'d Signal<CriticalSectionRawMutex, AtOutput>,
     ready_announced: &'d Signal<CriticalSectionRawMutex, ()>,
+    scan_done: &'d Signal<CriticalSectionRawMutex, AtOutput>,
     ready: &'static Signal<CriticalSectionRawMutex, ()>,
     rx: [u8; RX_SCRATCH],
     // AT transaction scratch.
     at_buf: LineBuffer,
     at_lines: heapless::Vec<LineBuffer, AT_LINES_MAX>,
+    /// `+CWLAP` lines seen between `AT+CWLAP` and `+CW:SCAN_DONE`.
+    scan_buf: heapless::Vec<LineBuffer, AT_LINES_MAX>,
     at_status: Option<AtStatus>,
     at_prompt: bool,
     at_active: bool,
@@ -387,7 +406,7 @@ where
     SPI: SpiBus,
     CS: OutputPin,
 {
-    let State { ch, at_req, at_resp, ready_announced } = state;
+    let State { ch, at_req, at_resp, ready_announced, scan_done } = state;
     let (ch_runner, device) = ch::new(ch, HardwareAddress::Ethernet(mac), MTU);
     let state_runner = ch_runner.state_runner();
 
@@ -401,10 +420,12 @@ where
         at_req,
         at_resp,
         ready_announced,
+        scan_done,
         ready,
         rx: [0; RX_SCRATCH],
         at_buf: LineBuffer::new(),
         at_lines: heapless::Vec::new(),
+        scan_buf: heapless::Vec::new(),
         at_status: None,
         at_prompt: false,
         at_active: false,
@@ -413,6 +434,7 @@ where
         at_req,
         at_resp,
         ready_announced,
+        scan_done,
         state: state_runner,
         timeout: AT_TIMEOUT,
     };
@@ -540,6 +562,14 @@ where
             defmt::trace!("unsolicited line: |{}|", self.at_buf.as_str());
             if self.at_buf.starts_with("ready") {
                 self.ready_announced.signal(());
+            } else if self.at_buf.starts_with("+CWLAP:") {
+                let _ = self.scan_buf.push(self.at_buf.clone());
+            } else if self.at_buf.starts_with("+CW:SCAN_DONE") {
+                let lines = core::mem::take(&mut self.scan_buf);
+                self.scan_done.signal(AtOutput {
+                    status: AtStatus::Ok,
+                    lines,
+                });
             }
         }
         self.at_buf.clear();
