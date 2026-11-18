@@ -192,6 +192,258 @@ async fn ntp_task(stack: Stack<'static>) {
     }
 }
 
+/// One keyless, plain-HTTP endpoint the dashboard pulls from on each page
+/// load. Chosen at random so every reload shows something different.
+///
+/// Plain HTTP on purpose: TLS on this class of MCU means dragging in a TLS
+/// stack and its buffers, and none of these sources need it.
+/// How to turn the response body into the card text.
+enum PullKind {
+    /// The body is already the text we want.
+    Text,
+    /// The body is JSON; show the string stored under this key.
+    JsonKey(&'static str),
+    /// The body is open-notify's ISS JSON; show the current position.
+    IssPosition,
+}
+
+struct PullSource {
+    host: &'static str,
+    path: &'static str,
+    label: &'static str,
+    kind: PullKind,
+}
+
+const PULL_SOURCES: [PullSource; 4] = [
+    PullSource {
+        host: "wttr.in",
+        path: "/?format=3",
+        label: "weather",
+        kind: PullKind::Text,
+    },
+    PullSource {
+        host: "ip-api.com",
+        path: "/line/?fields=city,country",
+        label: "where are we",
+        kind: PullKind::Text,
+    },
+    PullSource {
+        host: "api.open-notify.org",
+        path: "/iss-now.json",
+        label: "iss right now",
+        kind: PullKind::IssPosition,
+    },
+    PullSource {
+        host: "www.boredapi.com",
+        path: "/api/activity",
+        label: "activity of the day",
+        kind: PullKind::JsonKey("activity"),
+    },
+];
+
+/// First occurrence of `needle` in `haystack`.
+fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Case-insensitive search for an ASCII word.
+fn contains_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| {
+        w.iter()
+            .zip(needle)
+            .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
+    })
+}
+
+/// Decode an HTTP/1.1 chunked body into `out`, returning the bytes written.
+fn dechunk(raw: &[u8], out: &mut [u8]) -> usize {
+    let mut i = 0;
+    let mut o = 0;
+    while i < raw.len() && o < out.len() {
+        // Chunk size: hex digits up to CRLF.
+        let mut size = 0usize;
+        let mut digits = false;
+        while i < raw.len() {
+            let d = match raw[i] {
+                b'0'..=b'9' => (raw[i] - b'0') as usize,
+                b'a'..=b'f' => (raw[i] - b'a' + 10) as usize,
+                b'A'..=b'F' => (raw[i] - b'A' + 10) as usize,
+                _ => break,
+            };
+            size = size * 16 + d;
+            i += 1;
+            digits = true;
+        }
+        if !digits || size == 0 {
+            break;
+        }
+        while i < raw.len() && (raw[i] == b'\r' || raw[i] == b'\n') {
+            i += 1;
+        }
+        let end = (i + size).min(raw.len());
+        let take = (end - i).min(out.len() - o);
+        out[o..o + take].copy_from_slice(&raw[i..i + take]);
+        o += take;
+        if take < size {
+            break;
+        }
+        i = end + 2; // skip the CRLF after the chunk
+    }
+    o
+}
+
+/// Extract the string value stored under `key` in a JSON body.
+///
+/// Tolerates whitespace between the colon and the opening quote, which the
+/// open-notify payload has (`"latitude": "50.15"`) and boredapi does not.
+fn json_string<'a>(raw: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
+    let mut pattern = [0u8; 40];
+    if key.len() + 2 > pattern.len() {
+        return None;
+    }
+    pattern[0] = b'"';
+    pattern[1..1 + key.len()].copy_from_slice(key);
+    pattern[1 + key.len()] = b'"';
+    let pattern = &pattern[..key.len() + 2];
+
+    let mut i = find_sub(raw, pattern)? + pattern.len();
+    while i < raw.len() && (raw[i] == b' ' || raw[i] == b':') {
+        i += 1;
+    }
+    if raw.get(i) != Some(&b'"') {
+        return None;
+    }
+    i += 1;
+    let rest = &raw[i..];
+    let end = rest.iter().position(|&b| b == b'"')?;
+    Some(&rest[..end])
+}
+
+/// Fetch one random source over plain HTTP.
+///
+/// Returns the source label and a short, single-line rendering of the body.
+/// Every failure path returns a human-readable message instead of an error, so
+/// the page always has something to show.
+async fn http_pull(
+    stack: Stack<'static>,
+    rng: &mut Rng<'static, embassy_stm32::mode::Async>,
+) -> (&'static str, heapless::String<192>) {
+    let mut pick = [0u8; 1];
+    let _ = rng.fill_bytes(&mut pick).await;
+    let src = &PULL_SOURCES[pick[0] as usize % PULL_SOURCES.len()];
+
+    let mut text = heapless::String::<192>::new();
+
+    let addr = match stack.dns_query(src.host, DnsQueryType::A).await {
+        Ok(addrs) if !addrs.is_empty() => addrs[0],
+        _ => {
+            let _ = text.push_str("(dns failed)");
+            return (src.label, text);
+        }
+    };
+
+    let mut rx = [0u8; 1024];
+    let mut tx = [0u8; 256];
+    let mut sock = match TcpSocket::new(stack, &mut rx, &mut tx) {
+        Ok(sock) => sock,
+        Err(_) => {
+            let _ = text.push_str("(no free socket)");
+            return (src.label, text);
+        }
+    };
+
+    let mut req = heapless::String::<160>::new();
+    let _ = write!(
+        req,
+        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: st67w611\r\nConnection: close\r\n\r\n",
+        src.path, src.host
+    );
+
+    let mut buf = [0u8; 1024];
+    let mut n = 0usize;
+    let exchange = async {
+        sock.connect((addr, 80u16)).await.map_err(|_| ())?;
+        sock.write_all(req.as_bytes()).await.map_err(|_| ())?;
+        while n < buf.len() {
+            match sock.read(&mut buf[n..]).await {
+                Ok(0) => break,
+                Ok(k) => n += k,
+                Err(_) => break,
+            }
+        }
+        Ok::<(), ()>(())
+    };
+    if with_timeout(Duration::from_secs(5), exchange).await.is_err() {
+        sock.close();
+        let _ = text.push_str("(timeout)");
+        return (src.label, text);
+    }
+    sock.close();
+
+    let raw = &buf[..n];
+    let head_end = find_sub(raw, b"\r\n\r\n");
+    let headers = match head_end {
+        Some(i) => &raw[..i],
+        None => raw,
+    };
+    let mut body = match head_end {
+        Some(i) => &raw[i + 4..],
+        None => raw,
+    };
+
+    // Some servers chunk the body; decode it into a scratch buffer.
+    let mut decoded = [0u8; 256];
+    if contains_ignore_case(headers, b"transfer-encoding: chunked") {
+        let len = dechunk(body, &mut decoded);
+        body = &decoded[..len];
+    }
+
+    // Turn the raw body into the text the card shows.
+    let mut iss = heapless::String::<64>::new();
+    let body: &[u8] = match src.kind {
+        PullKind::Text => body,
+        PullKind::JsonKey(key) => json_string(body, key.as_bytes()).unwrap_or(b"(key missing)"),
+        PullKind::IssPosition => {
+            let lat = json_string(body, b"latitude");
+            let lon = json_string(body, b"longitude");
+            match (lat, lon) {
+                (Some(lat), Some(lon)) => {
+                    let _ = write!(
+                        iss,
+                        "at {}, {}",
+                        core::str::from_utf8(lat).unwrap_or("?"),
+                        core::str::from_utf8(lon).unwrap_or("?")
+                    );
+                    iss.as_bytes()
+                }
+                _ => b"(no position)",
+            }
+        }
+    };
+
+    let body = if body.is_empty() { b"(empty reply)" as &[u8] } else { body };
+
+    // Flatten to one line and cap the length so the card stays tidy.
+    let mut count = 0usize;
+    for &b in body {
+        if count >= 150 {
+            break;
+        }
+        let c = match b {
+            b'\r' | b'\n' | b'\t' => ' ',
+            b if b.is_ascii() => b as char,
+            _ => continue, // skip non-ASCII (emoji from wttr.in, etc.)
+        };
+        if text.push(c).is_err() {
+            break;
+        }
+        count += 1;
+    }
+
+    info!("pull: {} -> {}", src.label, text.as_str());
+    (src.label, text)
+}
+
 /// True if the request line is `GET <path> ...`.
 fn wants(req: &[u8], path: &[u8]) -> bool {
     req.starts_with(b"GET ")
@@ -346,6 +598,10 @@ async fn web_task(stack: Stack<'static>, mut rng: Rng<'static, embassy_stm32::mo
             let _ = sock.write_all(body.as_bytes()).await;
         } else {
             REQUESTS.fetch_add(1, Ordering::Relaxed);
+            // Pull a fresh item from the internet on every page load, then
+            // splice it into the card grid as plain text.
+            let (label, text) = http_pull(stack, &mut rng).await;
+
             const HEADER: &str = concat!(
                 "HTTP/1.1 200 OK\r\n",
                 "Content-Type: text/html; charset=utf-8\r\n",
@@ -354,16 +610,43 @@ async fn web_task(stack: Stack<'static>, mut rng: Rng<'static, embassy_stm32::mo
                 "\r\n"
             );
             let _ = sock.write_all(HEADER.as_bytes()).await;
-            let _ = sock.write_all(INDEX_HTML.as_bytes()).await;
+            let _ = sock.write_all(INDEX_HEAD.as_bytes()).await;
+
+            let mut card = heapless::String::<512>::new();
+            let _ = write!(
+                card,
+                "<div class=\"card\"><div class=\"k\">{}</div><div class=\"v\" style=\"font-size:1rem;color:#e6edf3\">",
+                label
+            );
+            for c in text.chars() {
+                match c {
+                    '<' => {
+                        let _ = card.push_str("&lt;");
+                    }
+                    '>' => {
+                        let _ = card.push_str("&gt;");
+                    }
+                    '&' => {
+                        let _ = card.push_str("&amp;");
+                    }
+                    _ => {
+                        let _ = card.push(c);
+                    }
+                }
+            }
+            let _ = card.push_str("</div></div>\n");
+            let _ = sock.write_all(card.as_bytes()).await;
+            let _ = sock.write_all(INDEX_TAIL.as_bytes()).await;
         }
 
         close_and_drain(&mut sock).await;
     }
 }
 
-/// The dashboard page. No frameworks, no build step: one canvas and one
-/// `EventSource`.
-const INDEX_HTML: &str = r#"<!doctype html>
+/// First half of the dashboard page: head, styles, title, and the static
+/// cards. The pulled-from-the-internet card is streamed after this, then
+/// [`INDEX_TAIL`] finishes the page.
+const INDEX_HEAD: &str = r#"<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ST67W611 live</title>
@@ -390,7 +673,11 @@ canvas{width:100%;height:auto;border-radius:10px;border:1px solid var(--bd);back
 <div class="card"><div class="k">uptime</div><div class="v" id="up">&mdash;</div></div>
 <div class="card"><div class="k">connections</div><div class="v" id="conns">&mdash;</div></div>
 <div class="card"><div class="k">requests</div><div class="v" id="reqs">&mdash;</div></div>
-</div>
+"#;
+
+/// Second half of the page: closes the card grid, then the canvas and the
+/// `EventSource` wiring.
+const INDEX_TAIL: &str = r#"</div>
 <canvas id="c" width="880" height="180"></canvas>
 </div>
 <script>
