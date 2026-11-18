@@ -37,7 +37,15 @@ embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a
     "tcp-listener",
     "udp",
     "dhcpv4",
+    # The USB portal hands addresses to the host over CDC-NCM.
+    "dhcpv4-server",
     "dns",
+] }
+# USB device stack: the board enumerates as an Ethernet gadget (CDC-NCM) on the
+# user USB-C connector, so credentials can be provisioned without Wi-Fi.
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a95ebbc478baf6ae6eddb00ae821ced", features = [
+    "defmt",
+    "class-cdc-ncm",
 ] }
 
 embedded-hal = "1.0"

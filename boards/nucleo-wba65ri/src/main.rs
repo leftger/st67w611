@@ -47,15 +47,17 @@ use embedded_io_async::Write;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-use st67w611::net::xarxa::{self, HardwareAddress, State as XarxaState, WifiDevice};
+use st67w611::net::xarxa::{self, Control, HardwareAddress, State as XarxaState, WifiDevice};
 
+mod portal;
 mod secrets;
 
 // RDY is on PB13 -> EXTI13; the hardware RNG feeds the stack seed and the
-// live telemetry stream.
+// live telemetry stream; USB_OTG_HS carries the provisioning portal.
 bind_interrupts!(struct Irqs {
     EXTI13 => embassy_stm32::exti::InterruptHandler<embassy_stm32::peripherals::EXTI13>;
     RNG => embassy_stm32::rng::InterruptHandler<embassy_stm32::peripherals::RNG>;
+    USB_OTG_HS => embassy_stm32::usb::InterruptHandler<embassy_stm32::peripherals::USB_OTG_HS>;
 });
 
 /// panic-probe 1.0 no longer registers `_defmt_panic` for you, so hook it up.
@@ -847,7 +849,25 @@ async fn rdy_task(
 async fn main(spawner: Spawner) {
     // The RNG defaults to the LSE clock, which this board never starts (no
     // 32.768 kHz crystal guaranteed), so point it at the always-on HSI instead.
+    //
+    // USB_OTG_HS defaults to HSE, which is also not fitted, so run PLL1 from
+    // HSI and mux the OTG clock onto its P output. 16 MHz x 30 = 480 MHz VCO,
+    // /5 gives the 96 MHz system clock, /10 gives the 48 MHz USB needs.
     let mut config = embassy_stm32::Config::default();
+    config.rcc.pll1 = Some(embassy_stm32::rcc::Pll {
+        source: embassy_stm32::rcc::PllSource::Hsi,
+        prediv: embassy_stm32::rcc::PllPreDiv::Div1,
+        mul: embassy_stm32::rcc::PllMul::Mul30,
+        divr: Some(embassy_stm32::rcc::PllDiv::Div5),
+        divq: Some(embassy_stm32::rcc::PllDiv::Div10),
+        // The OTG PHY multiplies its reference to 48 MHz internally and only
+        // accepts 16/19.2/20/24/26/32 MHz, so P stays at 16 MHz.
+        divp: Some(embassy_stm32::rcc::PllDiv::Div30),
+        frac: Some(0),
+    });
+    config.rcc.sys = embassy_stm32::rcc::Sysclk::Pll1R;
+    config.rcc.voltage_scale = embassy_stm32::rcc::VoltageScale::Range1;
+    config.rcc.mux.otghssel = embassy_stm32::rcc::mux::Otghssel::Pll1P;
     config.rcc.mux.rngsel = embassy_stm32::rcc::mux::Rngsel::Hsi;
     let p = embassy_stm32::init(config);
     info!("st67w611 bring-up on NUCLEO-WBA65RI");
@@ -898,6 +918,12 @@ async fn main(spawner: Spawner) {
         MAC,
     );
     spawner.spawn(unwrap!(xarxa_task(runner)));
+
+    // Keep the control plane for the whole run: the USB portal issues its
+    // scan/join commands through this same handle, and every method takes
+    // `&self`, so handing out a shared reference is safe.
+    static CONTROL: StaticCell<Control<'static>> = StaticCell::new();
+    let control: &'static Control<'static> = CONTROL.init(control);
 
     // T02: the module is a WiFi MAC/PHY and the host runs the whole TCP/IP
     // stack. Start the stack now, but do NOT add the interface yet: the stack
@@ -996,6 +1022,10 @@ async fn main(spawner: Spawner) {
             info!("step: interface attached with the module's MAC, DHCP started");
             spawner.spawn(unwrap!(web_task(stack, rng)));
             spawner.spawn(unwrap!(ntp_task(stack)));
+
+            // Provisioning portal on the user USB-C connector. It runs on its
+            // own network stack, so it is reachable even with Wi-Fi down.
+            portal::spawn(spawner, p.USB_OTG_HS, p.PD6, p.PD7, Irqs, control);
         }
         Err(e) => error!("station MAC query failed: {:?}", e),
     }
@@ -1019,10 +1049,34 @@ async fn main(spawner: Spawner) {
         Err(e) => error!("scan failed: {:?}", e),
     }
 
-    info!("step: joining Wi-Fi ...");
-    match control.connect(secrets::WIFI_SSID, secrets::WIFI_PASSWORD).await {
-        Ok(()) => info!("step: Wi-Fi joined"),
-        Err(e) => error!("Wi-Fi join failed: {:?}", e),
+    // Prefer whatever the module already has stored: after provisioning over
+    // the USB portal, `CWJAP` + auto-connect make it re-join by itself, which
+    // is what lets this board travel between networks. The compile-time
+    // credentials remain as a fallback for a freshly flashed board.
+    let _ = control.at("AT+CWAUTOCONN=1").await;
+    let mut associated = false;
+    for _ in 0..20 {
+        if control.at("AT+CWJAP?").await.map(|o| o.is_ok()).unwrap_or(false) {
+            associated = true;
+            break;
+        }
+        Timer::after_millis(500).await;
+    }
+
+    if associated {
+        info!("step: module joined a stored network by itself");
+    } else {
+        info!("step: joining the built-in Wi-Fi credentials ...");
+        match control.connect(secrets::WIFI_SSID, secrets::WIFI_PASSWORD).await {
+            Ok(()) => {
+                let _ = control.at("AT+CWAUTOCONN=1").await;
+                info!("step: Wi-Fi joined");
+            }
+            Err(e) => warn!(
+                "no stored network and the built-in join failed ({:?}); provision one over USB at http://192.168.7.1/",
+                e
+            ),
+        }
     }
 
     loop {
