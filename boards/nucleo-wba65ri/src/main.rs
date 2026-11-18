@@ -31,10 +31,12 @@ use embassy_stm32::bind_interrupts;
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::spi::{Config as SpiConfig, Spi};
+use embassy_net::tcp::{TcpListener, TcpSocket};
 use embassy_net::{Stack, StackStorage, StaticPool};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
+use embedded_io_async::Write;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -73,6 +75,84 @@ async fn xarxa_task(runner: xarxa::Runner<'static, Spi2Bus, CsPin, N_RX, N_TX>) 
 #[embassy_executor::task]
 async fn net_task(mut runner: embassy_net::Runner<'static>) {
     runner.run().await
+}
+
+/// Serves one hard-coded page over HTTP on TCP port 80.
+///
+/// Everything here is plain `embedded-io-async` on top of the xarxa TCP stack:
+/// open a listener, accept connections one at a time, ignore the request
+/// contents, and answer with a fixed page.
+#[embassy_executor::task]
+async fn web_task(stack: Stack<'static>) {
+    // Socket buffers, one connection at a time. The page is tiny, so these can
+    // be small too.
+    let mut rx = [0u8; 512];
+    let mut tx = [0u8; 1024];
+
+    let mut listener = match TcpListener::new(stack) {
+        Ok(listener) => listener,
+        Err(_) => {
+            error!("web: no TCP listener slot");
+            return;
+        }
+    };
+    if let Err(e) = listener.listen(80u16) {
+        error!("web: listen(80) failed: {:?}", e);
+        return;
+    }
+    info!("web: HTTP server listening on port 80");
+
+    let mut served: u32 = 0;
+    loop {
+        let token = match listener.accept().await {
+            Ok(token) => token,
+            Err(_) => continue,
+        };
+
+        let mut sock = match TcpSocket::new(stack, &mut rx, &mut tx) {
+            Ok(sock) => sock,
+            Err(_) => continue,
+        };
+        if sock.accept(token).await.is_err() {
+            continue;
+        }
+
+        served += 1;
+        info!("web: connection {} served", served);
+
+        // The request is read and ignored; the same page is served to everyone.
+        let mut req = [0u8; 256];
+        let _ = sock.read(&mut req).await;
+
+        const HEADER: &str = concat!(
+            "HTTP/1.1 200 OK\r\n",
+            "Content-Type: text/html\r\n",
+            "Connection: close\r\n",
+            "\r\n"
+        );
+        const BODY: &str = concat!(
+            "<!doctype html><html><head><title>ST67W611</title></head><body>",
+            "<h1>ST67W611 on NUCLEO-WBA65RI</h1>",
+            "<p>T02 firmware, embassy-net xarxa stack, served over SPI Wi-Fi.</p>",
+            "</body></html>"
+        );
+
+        let _ = sock.write_all(HEADER.as_bytes()).await;
+        let _ = sock.write_all(BODY.as_bytes()).await;
+        // Close the transmit half gracefully: pending data goes out with the
+        // FIN. Dropping the socket here would send RST instead, and the client
+        // would throw away the response it never got to read.
+        sock.close();
+        // Drain until the peer closes its side, completing the FIN exchange.
+        let mut discard = [0u8; 64];
+        loop {
+            match sock.read(&mut discard).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        // Dropping the now-closed socket returns its buffers to the stack.
+    }
 }
 
 /// Packet pool for the whole stack, one static so every buffer comes from the
@@ -283,6 +363,7 @@ async fn main(spawner: Spawner) {
             let iface = unwrap!(stack.add_iface_borrowed(DEVICE.init(device)));
             unwrap!(iface.set_dhcpv4(Some(Default::default())));
             info!("step: interface attached with the module's MAC, DHCP started");
+            spawner.spawn(unwrap!(web_task(stack)));
         }
         Err(e) => error!("station MAC query failed: {:?}", e),
     }
