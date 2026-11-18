@@ -37,6 +37,7 @@ use embassy_stm32::spi::{Config as SpiConfig, Spi};
 use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::{TcpListener, TcpSocket};
 use embassy_net::udp::UdpSocket;
+use embassy_net::wire::IpAddr;
 use embassy_net::{Stack, StackStorage, StaticPool};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
@@ -222,10 +223,10 @@ const PULL_SOURCES: [PullSource; 4] = [
         kind: PullKind::Text,
     },
     PullSource {
-        host: "ip-api.com",
-        path: "/line/?fields=city,country",
+        host: "ipinfo.io",
+        path: "/json",
         label: "where are we",
-        kind: PullKind::Text,
+        kind: PullKind::JsonKey("city"),
     },
     PullSource {
         host: "api.open-notify.org",
@@ -319,6 +320,17 @@ fn json_string<'a>(raw: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
     Some(&rest[..end])
 }
 
+/// Upper bound for a whole pull, DNS included. The web task serves pages and
+/// streams, so it must never sit in a fetch indefinitely: embassy-net's DNS
+/// query has no timeout of its own and keeps retrying if a reply is lost.
+const PULL_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Resolved IPv4 address per source, filled on first use. The resolver is a
+/// scarce resource shared with NTP, and the DHCP-provided server on this
+/// network is often a dead host, so each name is looked up at most once.
+static PULL_IPS: Mutex<CriticalSectionRawMutex, Cell<[Option<IpAddr>; PULL_SOURCES.len()]>> =
+    Mutex::new(Cell::new([None; PULL_SOURCES.len()]));
+
 /// Fetch one random source over plain HTTP.
 ///
 /// Returns the source label and a short, single-line rendering of the body.
@@ -330,16 +342,45 @@ async fn http_pull(
 ) -> (&'static str, heapless::String<192>) {
     let mut pick = [0u8; 1];
     let _ = rng.fill_bytes(&mut pick).await;
-    let src = &PULL_SOURCES[pick[0] as usize % PULL_SOURCES.len()];
+    let idx = pick[0] as usize % PULL_SOURCES.len();
+    let src = &PULL_SOURCES[idx];
 
     let mut text = heapless::String::<192>::new();
+    if with_timeout(PULL_TIMEOUT, http_get_into(stack, idx, &mut text))
+        .await
+        .is_err()
+    {
+        text.clear();
+        let _ = text.push_str("(timeout)");
+    }
 
-    let addr = match stack.dns_query(src.host, DnsQueryType::A).await {
-        Ok(addrs) if !addrs.is_empty() => addrs[0],
-        _ => {
-            let _ = text.push_str("(dns failed)");
-            return (src.label, text);
-        }
+    info!("pull: {} -> {}", src.label, text.as_str());
+    (src.label, text)
+}
+
+/// Resolve, connect, fetch and render source `idx` into `text`.
+async fn http_get_into(stack: Stack<'static>, idx: usize, text: &mut heapless::String<192>) {
+    let src = &PULL_SOURCES[idx];
+
+    // Use the cached address when we have one; only the first attempt per
+    // source pays for DNS.
+    let addr = match PULL_IPS.lock(|c| c.get()[idx]) {
+        Some(addr) => addr,
+        None => match stack.dns_query(src.host, DnsQueryType::A).await {
+            Ok(addrs) if !addrs.is_empty() => {
+                let addr = addrs[0];
+                PULL_IPS.lock(|c| {
+                    let mut ips = c.get();
+                    ips[idx] = Some(addr);
+                    c.set(ips);
+                });
+                addr
+            }
+            _ => {
+                let _ = text.push_str("(dns failed)");
+                return;
+            }
+        },
     };
 
     let mut rx = [0u8; 1024];
@@ -348,7 +389,7 @@ async fn http_pull(
         Ok(sock) => sock,
         Err(_) => {
             let _ = text.push_str("(no free socket)");
-            return (src.label, text);
+            return;
         }
     };
 
@@ -376,7 +417,7 @@ async fn http_pull(
     if with_timeout(Duration::from_secs(5), exchange).await.is_err() {
         sock.close();
         let _ = text.push_str("(timeout)");
-        return (src.label, text);
+        return;
     }
     sock.close();
 
@@ -439,9 +480,6 @@ async fn http_pull(
         }
         count += 1;
     }
-
-    info!("pull: {} -> {}", src.label, text.as_str());
-    (src.label, text)
 }
 
 /// True if the request line is `GET <path> ...`.
@@ -948,6 +986,13 @@ async fn main(spawner: Spawner) {
             control.set_hardware_address(HardwareAddress::Ethernet(mac));
             let iface = unwrap!(stack.add_iface_borrowed(DEVICE.init(device)));
             unwrap!(iface.set_dhcpv4(Some(Default::default())));
+            // The DHCP server on this network advertises a resolver that does
+            // not answer, so pin public resolvers ahead of it. Static servers
+            // are placed at the front of the list by update_dns_servers.
+            stack.set_dns_servers(&[
+                IpAddr::v4(1, 1, 1, 1),
+                IpAddr::v4(9, 9, 9, 9),
+            ]);
             info!("step: interface attached with the module's MAC, DHCP started");
             spawner.spawn(unwrap!(web_task(stack, rng)));
             spawner.spawn(unwrap!(ntp_task(stack)));
