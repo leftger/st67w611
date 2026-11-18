@@ -34,6 +34,7 @@ use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::rng::Rng;
 use embassy_stm32::spi::{Config as SpiConfig, Spi};
+use embassy_stm32::time::Hertz;
 use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::{TcpListener, TcpSocket};
 use embassy_net::udp::UdpSocket;
@@ -523,7 +524,9 @@ async fn web_task(stack: Stack<'static>, mut rng: Rng<'static, embassy_stm32::mo
     // Socket buffers, one connection at a time. The page is a few KB, so the
     // transmit side is larger than the request side.
     let mut rx = [0u8; 512];
-    let mut tx = [0u8; 2048];
+    // A larger transmit buffer directly raises throughput: the sender is
+    // window-limited, so bytes-per-RTT is what bounds bulk transfers.
+    let mut tx = [0u8; 8192];
 
     let mut listener = match TcpListener::new(stack) {
         Ok(listener) => listener,
@@ -605,6 +608,21 @@ async fn web_task(stack: Stack<'static>, mut rng: Rng<'static, embassy_stm32::mo
                 }
                 Timer::after_millis(500).await;
             }
+        } else if wants(req, b"/api/bench") {
+            // Throughput probe: one fixed 16 KiB body, no work behind it, so
+            // the time it takes is dominated by the SPI link to the module.
+            // `curl -o /dev/null -w '%{speed_download}' .../api/bench`
+            const BODY: [u8; 16 * 1024] = [b'A'; 16 * 1024];
+            const HDR: &str = concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Content-Type: application/octet-stream\r\n",
+                "Cache-Control: no-store\r\n",
+                "Connection: close\r\n",
+                "Content-Length: 16384\r\n",
+                "\r\n"
+            );
+            let _ = sock.write_all(HDR.as_bytes()).await;
+            let _ = sock.write_all(&BODY).await;
         } else if wants(req, b"/api/stats") {
             REQUESTS.fetch_add(1, Ordering::Relaxed);
             let mut body = heapless::String::<128>::new();
@@ -881,16 +899,23 @@ async fn main(spawner: Spawner) {
     info!("step: module power-on");
 
     // CS (D10 / PB9). This driver drives CS **active high**, so idle is low.
-    let cs = Output::new(p.PB9, Level::Low, Speed::High);
+    let cs = Output::new(p.PB9, Level::Low, Speed::VeryHigh);
 
     // SPI2 on the Arduino header: SCK=PB10, MOSI=PC3, MISO=PA9.
-    // `SpiConfig::default()` is mode 0, MSB first — matching ST's SPI init.
+    //
+    // Mode 0, MSB first — matching ST's SPI init. The ST67W611M1 host
+    // interface is rated for 50 MHz; embassy defaults to 1 MHz, which made
+    // every AT round trip and every frame needlessly slow. 24 MHz is a
+    // conservative step for the Arduino-header wiring and still leaves the
+    // bus idle most of the time.
+    let mut spi_cfg = SpiConfig::default();
+    spi_cfg.frequency = Hertz(24_000_000);
     let spi = AsyncSpi::new(Spi::new_blocking(
         p.SPI2,
         p.PB10,
         p.PC3,
         p.PA9,
-        SpiConfig::default(),
+        spi_cfg,
     ));
 
     // RDY (D3 / PB13).
