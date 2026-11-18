@@ -222,6 +222,37 @@ impl<'d> Control<'d> {
         self.exchange(AtRequest::command(cmd, self.timeout)?).await
     }
 
+    /// Ask the module for its station MAC address (`AT+CIPSTAMAC?`).
+    ///
+    /// In T02 the host's Ethernet frames must carry the module's own Wi-Fi MAC:
+    /// the module filters inbound unicast frames by it, so a made-up host MAC
+    /// receives broadcasts but never the replies addressed to it.
+    pub async fn station_mac(&self) -> Result<[u8; 6]> {
+        let out = self.at("AT+CIPSTAMAC?").await?;
+        for line in out.lines.iter() {
+            let Some(rest) = line.as_str().strip_prefix("+CIPSTAMAC:") else {
+                continue;
+            };
+            let rest = rest.trim().trim_matches('"');
+            let mut mac = [0u8; 6];
+            let mut parts = rest.split(':');
+            for byte in mac.iter_mut() {
+                let hex = parts.next().ok_or(Error::AtCommandFailed)?;
+                *byte = u8::from_str_radix(hex, 16).map_err(|_| Error::AtCommandFailed)?;
+            }
+            return Ok(mac);
+        }
+        Err(Error::AtCommandFailed)
+    }
+
+    /// Replace the MAC address the embassy-net stack transmits with.
+    ///
+    /// Call this after [`Self::station_mac`] and before DHCP is started, so
+    /// every frame the host sends carries the module's own address.
+    pub fn set_hardware_address(&self, address: HardwareAddress) {
+        self.state.set_hardware_address(address);
+    }
+
     /// Send an AT command whose payload follows the module's `>` prompt.
     ///
     /// Used by `AT+OTASEND` (firmware update), `AT+BLEGATTSNTFY` and friends.
@@ -400,6 +431,12 @@ where
             match select3(self.at_req.receive(), self.ch.tx(), self.ready.wait()).await {
                 Either3::First(cmd) => self.at_transaction(cmd).await,
                 Either3::Second(buf) => {
+                    #[cfg(feature = "defmt")]
+                    defmt::trace!(
+                        "tx: len={} bytes={=[u8]}",
+                        buf.len(),
+                        &buf[..buf.len().min(16)]
+                    );
                     let outbound = Outbound {
                         traffic_type: TrafficType::NetworkSta,
                         payload: &buf[..],
@@ -453,8 +490,18 @@ where
 
     /// Hand an Ethernet frame to the embassy-net channel.
     fn deliver_ethernet(&mut self, len: usize) {
-        let Some(mut packet) = PacketBuf::try_new() else {
-            // Pool exhausted: drop. The stack will retransmit.
+        // The module acknowledges host transmissions with an empty NetworkSta
+        // header; that is not a frame and must not be pushed up the stack.
+        if len == 0 {
+            return;
+        }
+        // The channel owns no pool of its own: an empty buffer must be taken
+        // from the stack's RX pool (`rx_buf`/`try_rx_buf`), filled here, and
+        // pushed back with `try_rx`. Dropping the buffer returns it to the
+        // pool, so no explicit failure path is needed beyond dropping the frame.
+        let Some(mut packet) = self.ch.try_rx_buf() else {
+            // No empty buffer from the stack right now: drop. The stack will
+            // retransmit.
             return;
         };
         let n = len.min(packet.capacity());

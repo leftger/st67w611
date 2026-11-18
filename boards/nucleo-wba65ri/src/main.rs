@@ -31,19 +31,20 @@ use embassy_stm32::bind_interrupts;
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::spi::{Config as SpiConfig, Spi};
+use embassy_net::{Stack, StackStorage, StaticPool};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-use st67w611::net::xarxa::{self, State as XarxaState, WifiDevice};
+use st67w611::net::xarxa::{self, HardwareAddress, State as XarxaState, WifiDevice};
 
 mod secrets;
 
 // RDY is on PB13 -> EXTI13.
 bind_interrupts!(struct Irqs {
-    EXTI13 => embassy_stm32::exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI13>;
+    EXTI13 => embassy_stm32::exti::InterruptHandler<embassy_stm32::peripherals::EXTI13>;
 });
 
 /// panic-probe 1.0 no longer registers `_defmt_panic` for you, so hook it up.
@@ -67,6 +68,16 @@ type CsPin = Output<'static>;
 async fn xarxa_task(runner: xarxa::Runner<'static, Spi2Bus, CsPin, N_RX, N_TX>) {
     runner.run().await
 }
+
+/// Runs the embassy-net stack itself (xarxa flavour).
+#[embassy_executor::task]
+async fn net_task(mut runner: embassy_net::Runner<'static>) {
+    runner.run().await
+}
+
+/// Packet pool for the whole stack, one static so every buffer comes from the
+/// same place. 1514 bytes = Ethernet MTU; the xarxa pool holds 16 of them.
+static POOL: StaticPool<1514, 16> = StaticPool::new();
 
 /// Thin async wrapper over the blocking SPI bus; this bring-up needs no DMA.
 struct AsyncSpi<S>(S);
@@ -103,20 +114,28 @@ static RDY_SIGNAL: StaticCell<Signal<CriticalSectionRawMutex, ()>> = StaticCell:
 static HDR_ACK_SIGNAL: StaticCell<Signal<CriticalSectionRawMutex, ()>> = StaticCell::new();
 static RDY_LEVEL: StaticCell<AtomicBool> = StaticCell::new();
 
-/// Keep `level` true to the wire by polling the RDY pin, the way ST's port does:
-/// `spi_port_is_ready()` simply returns `HAL_GPIO_ReadPin(SPI_RDY_...)`. There is
-/// no edge interrupt anywhere in the reference path, and inferring the level from
-/// edges leaves it stale whenever one is missed.
+/// Watch the RDY pin and drive the two engine signals, the way ST's port does:
+///
+/// * rising edge  -> `spi_on_txn_data_ready()` -> the module is ready for a
+///   transaction (we signal `ready`),
+/// * falling edge -> `spi_on_header_ack()`     -> the module acknowledged our
+///   header (we signal `hdr_ack`).
+///
+/// The level itself is also latched for the engine, because the engine skips a
+/// wait when RDY is already high (which is how the reference's
+/// `SPI_XFER_F_SKIP_FIRST_TXN_WAIT` path works). The reference has no edge
+/// interrupt on RDY either - the level is the source of truth there too.
 #[embassy_executor::task]
 async fn rdy_task(
-    mut rdy: ExtiInput<'static, embassy_stm32::mode::Async>,
-    signal: &'static Signal<CriticalSectionRawMutex, ()>,
+    rdy: ExtiInput<'static, embassy_stm32::mode::Async>,
+    ready: &'static Signal<CriticalSectionRawMutex, ()>,
+    hdr_ack: &'static Signal<CriticalSectionRawMutex, ()>,
     level: &'static AtomicBool,
 ) {
     let mut last = rdy.is_high();
     level.store(last, Ordering::Relaxed);
     if last {
-        signal.signal(());
+        ready.signal(());
     }
     loop {
         Timer::after(Duration::from_micros(200)).await;
@@ -124,11 +143,12 @@ async fn rdy_task(
         if now_high != last {
             last = now_high;
             level.store(now_high, Ordering::Relaxed);
-            // Bring-up tracing: the RDY waveform. If the module never raises RDY
-            // again after its boot banner, the host has nothing to wait for and
-            // every command blocks - so this line is the measurement that matters.
             info!("RDY -> {}", now_high);
-            signal.signal(());
+            if now_high {
+                ready.signal(());
+            } else {
+                hdr_ack.signal(());
+            }
         }
     }
 }
@@ -160,16 +180,18 @@ async fn main(spawner: Spawner) {
     ));
 
     // RDY (D3 / PB13).
-    let rdy = ExtiInput::new(p.PB13, p.EXTI13, Pull::None, Irqs);
+    let rdy = ExtiInput::new_async(p.PB13, p.EXTI13, Pull::None, Irqs);
     let ready = RDY_SIGNAL.init(Signal::new());
     let hdr_ack = HDR_ACK_SIGNAL.init(Signal::new());
     let level = RDY_LEVEL.init(AtomicBool::new(false));
-    spawner.spawn(unwrap!(rdy_task(rdy, ready, level)));
+    spawner.spawn(unwrap!(rdy_task(rdy, ready, hdr_ack, level)));
 
     static XARXA: StaticCell<XarxaState<N_RX, N_TX>> = StaticCell::new();
     static DEVICE: StaticCell<WifiDevice<'static>> = StaticCell::new();
 
-    // Locally administered MAC — the module does not hand us its own.
+    // Placeholder MAC: `xarxa::new` needs one before the module can be asked
+    // for its real station MAC. It is replaced via `AT+CIPSTAMAC?` below,
+    // before DHCP starts.
     const MAC: [u8; 6] = [0x02, 0x00, 0x5A, 0x67, 0x61, 0x01];
 
     let (device, runner, control) = xarxa::new(
@@ -183,9 +205,18 @@ async fn main(spawner: Spawner) {
     );
     spawner.spawn(unwrap!(xarxa_task(runner)));
 
-    // Park the device for now: driver + AT commands only, no stack attached, so
-    // nothing else is transmitting on the link while we establish the AT path.
-    let _device: &'static mut WifiDevice<'static> = DEVICE.init(device);
+    // T02: the module is a WiFi MAC/PHY and the host runs the whole TCP/IP
+    // stack. Start the stack now, but do NOT add the interface yet: the stack
+    // caches the hardware address when the interface is added, and the real
+    // MAC is only known after `AT+CIPSTAMAC?` below.
+    static STACK_STORAGE: StaticCell<StackStorage<'static>> = StaticCell::new();
+    let (stack, net_runner) = Stack::new(
+        STACK_STORAGE.init(StackStorage::new()),
+        &POOL,
+        0x00c0_ffee_1234_5678,
+    );
+    spawner.spawn(unwrap!(net_task(net_runner)));
+    info!("embassy-net stack running (interface attaches after MAC discovery)");
 
     // The module announces readiness with an UNSOLICITED "ready" line over the
     // SPI link; ST's driver blocks on exactly that and then waits a further
@@ -237,6 +268,23 @@ async fn main(spawner: Spawner) {
             }
         }
         Err(e) => error!("  +GMR failed: {:?}", e),
+    }
+
+    // T02: the module filters inbound unicast frames by its own Wi-Fi MAC, so
+    // the host stack must transmit with that same address. Ask for it, then add
+    // the interface to the stack with that address, and only then start DHCP.
+    match control.station_mac().await {
+        Ok(mac) => {
+            info!(
+                "module station MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+            );
+            control.set_hardware_address(HardwareAddress::Ethernet(mac));
+            let iface = unwrap!(stack.add_iface_borrowed(DEVICE.init(device)));
+            unwrap!(iface.set_dhcpv4(Some(Default::default())));
+            info!("step: interface attached with the module's MAC, DHCP started");
+        }
+        Err(e) => error!("station MAC query failed: {:?}", e),
     }
 
     for i in 0..5 {

@@ -1,0 +1,6 @@
+# Embassy main currently uses `core::mem::DropGuard`, which is still unstable,
+# so this board builds with nightly until that stabilises (or the embassy rev
+# is pinned to one that predates it).
+[toolchain]
+channel = "nightly"
+targets = ["thumbv8m.main-none-eabihf"]

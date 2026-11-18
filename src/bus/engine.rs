@@ -30,7 +30,7 @@ use embedded_hal::digital::OutputPin;
 use embedded_hal_async::spi::SpiBus;
 
 use crate::bus::frame::{
-    aligned_len, frame_len, Header, HeaderError, TrafficType, HEADER_LEN, MAX_PAYLOAD, PAD_BYTE,
+    aligned_len, frame_len, Header, TrafficType, HEADER_LEN, MAX_PAYLOAD, PAD_BYTE,
 };
 use crate::error::{Error, Result};
 
@@ -49,19 +49,12 @@ pub const MSG_XFER_TIMEOUT: Duration = Duration::from_millis(500);
 /// `SPI_WAIT_HDR_ACK_TIMEOUT_MS` in `spi_port.h`.
 pub const HDR_ACK_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// How long to wait for RDY before clocking the module anyway.
-///
-/// ST waits indefinitely (`SPI_WAIT_TXN_TIMEOUT_MS` = 2000 ms) and treats a
-/// timeout as an error, but the module we have only asserts RDY once at boot, so
-/// an unbounded wait simply deadlocks. See the comment in `exchange`.
-pub const RDY_WAIT: Duration = Duration::from_millis(50);
+/// Minimum CS setup/hold time around a transfer.
+const CS_DELAY: Duration = Duration::from_micros(1);
 
 /// How many read-only frames to clock while the peer reports its RX stalled
 /// before giving up on ever getting our own frame out.
 pub const STALL_DRAIN_MAX: usize = 4;
-
-/// Minimum CS setup/hold time around a transfer.
-const CS_DELAY: Duration = Duration::from_micros(1);
 
 /// Minimum delay between a CS deassert and the next assert.
 ///
@@ -267,74 +260,75 @@ where
             }
         }
 
-        // Wait for the module to be ready for a transaction, unless RDY is
-        // already high.
+        // The handshake, faithfully per the reference `spi_iface.c`:
         //
-        // ST's engine task waits on (SPI_EVT_TXN_PENDING | SPI_EVT_TXN_RDY) with
-        // xClearOnExit = pdTRUE, so whichever bit woke it is CONSUMED:
+        //   1. assert CS,
+        //   2. wait for the module to assert RDY (it is "ready for a transaction"),
+        //   3. one full-duplex header+payload transfer,
+        //   4. if the module announced a longer frame, read the remainder,
+        //   5. wait for the header ack (the module drops RDY),
+        //   6. deassert CS.
         //
-        //   if (bits & SPI_EVT_TXN_RDY)  spi_do_xfer(engine, SKIP_FIRST_TXN_WAIT);
-        //   else if (bits & TXN_PENDING) spi_do_xfer(engine, 0);
+        // The reference skips the RDY wait when the transfer was triggered by
+        // the RDY event itself (SPI_XFER_F_SKIP_FIRST_TXN_WAIT); the level check
+        // below does the same job, because in that case RDY is already high.
         //
-        // TXN_RDY means the module asserted RDY (it has something to send), and
-        // TXN_PENDING means the host queued a frame. spi_xfer_one() then waits on
-        // TXN_RDY whenever wait_txn_rdy != 0. So a host-initiated send waits for
-        // the module to assert RDY, while a module-initiated transfer skips the
-        // wait precisely because that bit was just consumed waking the task.
-        //
-        // "Wait for RDY unless it is already high" is therefore the faithful
-        // behaviour — which is also what the module expects: it raises RDY when it
-        // is able to take a transaction.
-        //
-        // (For the record I got this wrong twice: first by dropping the wait for
-        // sends entirely, then by treating the event as a latched one-shot. The
-        // pdTRUE above is what settles it.)
-        // ...but bounded, and we proceed anyway if it never comes.
-        //
-        // Measured on hardware: the module asserts RDY for about 366 us, once, at
-        // boot - to announce the "ready" banner - and never again. Waiting for it
-        // per-transaction therefore deadlocks, which is exactly what we saw: one
-        // exchange works and every later one blocks until its timeout. A healthy
-        // module under ST's driver presumably re-asserts RDY per transaction, but
-        // ours demonstrably does not, so we wait only briefly and then clock it
-        // regardless. Clocking a not-ready module yields garbage headers rather
-        // than a hang, and the AT layer already retries until its deadline, so a
-        // late answer is still recovered.
-        if !self.rdy_level.load(Ordering::Acquire) {
-            let deadline = Instant::now() + RDY_WAIT;
-            while !self.rdy_level.load(Ordering::Acquire) {
-                let now = Instant::now();
-                if now >= deadline {
-                    break;
-                }
-                let _ = with_timeout(deadline - now, self.ready.wait()).await;
-            }
-        }
-
-        // Mandatory inter-transfer gap. ST's port refuses to assert CS until at
-        // least 2 us have passed since the previous deassert:
-        //
-        //   static int32_t last_falling_tick;
-        //   if (state == 1) WAIT_FROM(last_falling_tick, MICROSECOND_TO_TICK(2));
-        //   ...
-        //   else { ...deassert...; last_falling_tick = SYSTICK_VALUE; }
-        //
-        // (Projects/NUCLEO-N657X0-Q/.../Target/spi_port.c, spi_port_set_cs.)
-        // Back-to-back transfers with no gap are outside the module's spec, and
-        // it is exactly what our exchanges were doing.
+        // The two RDY edges mean two different things. Rising = the module is
+        // ready for a transaction (`spi_on_txn_data_ready`). Falling = the
+        // module acknowledged our header (`spi_on_header_ack`). The WBA65 board
+        // now drives `ready` on the rising edge and `hdr_ack` on the falling
+        // edge. Treating both edges as one event made the runner poll on the
+        // falling edge too, clocking the module while it was mid-handshake and
+        // desyncing the link - the "garbage headers" failure mode.
         Timer::after(CS_GAP).await;
         self.cs.set_high().map_err(|_| Error::Spi)?;
         Timer::after(CS_DELAY).await;
 
-        let mut result = self.perform(first_len, out, tx_deferred).await;
+        // Host-initiated sends wait for the module to be ready. The reference
+        // waits with CS asserted and a 2 s budget (SPI_WAIT_TXN_TIMEOUT_MS).
+        //
+        // The `ready` signal is only a hint to wake us: a rising edge can come
+        // and go while we are busy elsewhere, leaving a stale signal behind.
+        // The stored RDY level is the truth, so re-check it after every wake
+        // and never clock the module while the line is low - doing so is what
+        // produced the bit-shifted "garbage header" failures.
+        let mut result = if self.rdy_level.load(Ordering::Acquire) {
+            self.perform(first_len, out, tx_deferred).await
+        } else {
+            let deadline = Instant::now() + TXN_READY_TIMEOUT;
+            loop {
+                if self.rdy_level.load(Ordering::Acquire) {
+                    break self.perform(first_len, out, tx_deferred).await;
+                }
+                let now = Instant::now();
+                if now >= deadline {
+                    break Err(Error::Timeout);
+                }
+                let _ = with_timeout(deadline - now, self.ready.wait()).await;
+            }
+        };
+
+        // Header acknowledgement: the module pulls RDY low once it accepted the
+        // header. Same discipline as above: the level is the truth, the signal
+        // is just a wake-up.
+        if self.rdy_level.load(Ordering::Acquire) {
+            let deadline = Instant::now() + HDR_ACK_TIMEOUT;
+            loop {
+                if !self.rdy_level.load(Ordering::Acquire) {
+                    break;
+                }
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                let _ = with_timeout(deadline - now, self.hdr_ack.wait()).await;
+            }
+        }
 
         Timer::after(CS_DELAY).await;
         if self.cs.set_low().is_err() && result.is_ok() {
             result = Err(Error::Spi);
         }
-
-        // A missing header ack is not fatal; the reference only counts it.
-        let _ = with_timeout(HDR_ACK_TIMEOUT, self.hdr_ack.wait()).await;
 
         result
     }
