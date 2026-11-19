@@ -39,6 +39,7 @@ use st67w611::wifi::WiFi;
 bind_interrupts!(pub struct Irqs {
     EXTI13 => embassy_stm32::exti::InterruptHandler<embassy_stm32::peripherals::EXTI13>;
     RNG => embassy_stm32::rng::InterruptHandler<embassy_stm32::peripherals::RNG>;
+    USB_OTG_HS => embassy_stm32::usb::InterruptHandler<embassy_stm32::peripherals::USB_OTG_HS>;
 });
 
 /// panic-probe 1.0 no longer registers `_defmt_panic` for you, so hook it up.
@@ -67,6 +68,14 @@ async fn xarxa_task(runner: xarxa::Runner<'static, Spi2Bus, CsPin, N_RX, N_TX>) 
     runner.run().await
 }
 
+/// The USB device peripheral and its pins (the board's user USB-C connector).
+/// Only the demos that serve a page over USB use these.
+pub struct Usb {
+    pub otg: embassy_stm32::Peri<'static, embassy_stm32::peripherals::USB_OTG_HS>,
+    pub dp: embassy_stm32::Peri<'static, embassy_stm32::peripherals::PD6>,
+    pub dm: embassy_stm32::Peri<'static, embassy_stm32::peripherals::PD7>,
+}
+
 /// What `start` hands back.
 pub struct Started {
     /// The AT control plane; lives for the rest of the program.
@@ -75,14 +84,47 @@ pub struct Started {
     pub device: WifiDevice<'static>,
     /// Hardware RNG, for seeding the T02 stack.
     pub rng: Rng<'static, embassy_stm32::mode::Async>,
+    /// The USB peripheral, unused unless the demo serves a page over USB.
+    pub usb: Usb,
+    /// The independent watchdog, for firmware that must recover by itself.
+    pub iwdg: embassy_stm32::Peri<'static, embassy_stm32::peripherals::IWDG>,
 }
 
 /// Reset the module, start the SPI link, and wait until it answers `AT`.
 pub async fn start(spawner: Spawner) -> Started {
+    start_with(spawner, false).await
+}
+
+/// Like [`start`], but also set up the clocks the USB peripheral needs, for the
+/// demos that serve a page over the user USB-C connector.
+pub async fn start_usb(spawner: Spawner) -> Started {
+    start_with(spawner, true).await
+}
+
+async fn start_with(spawner: Spawner, usb: bool) -> Started {
     // The RNG defaults to the LSE clock, which this board never starts, so point
     // it at the always-on HSI instead.
     let mut config = embassy_stm32::Config::default();
     config.rcc.mux.rngsel = embassy_stm32::rcc::mux::Rngsel::Hsi;
+    if usb {
+        // USB_OTG_HS defaults to HSE, which is not fitted, so run PLL1 from HSI
+        // and mux the OTG clock onto its P output. 16 MHz x 30 = 480 MHz VCO, /5
+        // gives the 96 MHz system clock.
+        config.rcc.pll1 = Some(embassy_stm32::rcc::Pll {
+            source: embassy_stm32::rcc::PllSource::Hsi,
+            prediv: embassy_stm32::rcc::PllPreDiv::Div1,
+            mul: embassy_stm32::rcc::PllMul::Mul30,
+            divr: Some(embassy_stm32::rcc::PllDiv::Div5),
+            divq: Some(embassy_stm32::rcc::PllDiv::Div10),
+            // The OTG PHY multiplies its reference to 48 MHz internally and only
+            // accepts 16/19.2/20/24/26/32 MHz, so P stays at 16 MHz.
+            divp: Some(embassy_stm32::rcc::PllDiv::Div30),
+            frac: Some(0),
+        });
+        config.rcc.sys = embassy_stm32::rcc::Sysclk::Pll1R;
+        config.rcc.voltage_scale = embassy_stm32::rcc::VoltageScale::Range1;
+        config.rcc.mux.otghssel = embassy_stm32::rcc::mux::Otghssel::Pll1P;
+    }
     let p = embassy_stm32::init(config);
 
     // Reset the module so it goes through a defined boot and announces `ready`.
@@ -136,6 +178,12 @@ pub async fn start(spawner: Spawner) -> Started {
         control,
         device,
         rng,
+        usb: Usb {
+            otg: p.USB_OTG_HS,
+            dp: p.PD6,
+            dm: p.PD7,
+        },
+        iwdg: p.IWDG,
     }
 }
 
