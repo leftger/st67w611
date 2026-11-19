@@ -105,40 +105,36 @@ tls = ["dep:embedded-tls"]
 defmt = ["dep:defmt", "embassy-executor/defmt", "embassy-sync/defmt", "embassy-time/defmt", "heapless/defmt-03"]
 log = ["dep:log"]
 
-# Diagnostic examples (work with both T01 and T02 firmware)
+# Diagnostic examples (work with both T01 and T02 firmware). All examples log
+# through defmt, which `st67w611::Error` only implements with the `defmt` feature.
 [[example]]
 name = "stm32wba55_spi_diagnostic"
-required-features = []
+required-features = ["defmt"]
 
 [[example]]
 name = "stm32wba55_diagnostic_wifi_scan"
-required-features = []
+required-features = ["defmt"]
 
 [[example]]
 name = "stm32wba55_minimal_test"
-required-features = []
+required-features = ["defmt"]
 
 [[example]]
 name = "stm32wba55_debug_rdy"
-required-features = []
+required-features = ["defmt"]
 
 [[example]]
 name = "stm32wba55_firmware_programmer"
-required-features = []
+required-features = ["defmt"]
 
 # T01 examples (AT command-based networking on module)
 [[example]]
 name = "stm32wba55_t01_wifi_scan"
-required-features = ["mission-t01"]
+required-features = ["mission-t01", "defmt"]
 
 [[example]]
 name = "stm32wba55_t01_wifi_test"
-required-features = ["mission-t01"]
-
-# T02 examples (embassy-net on host MCU)
-[[example]]
-name = "stm32wba55_t02_embassy_net"
-required-features = ["mission-t02"]
+required-features = ["mission-t01", "defmt"]
 
 [profile.release]
 codegen-units = 1

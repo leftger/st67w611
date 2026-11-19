@@ -34,10 +34,6 @@ bind_interrupts!(struct Irqs {
 static TXN_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static HDR_ACK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-use embassy_stm32::mode::Async;
-use embassy_stm32::spi::mode::Master;
-type SpiType = Spi<'static, Async, Master>;
-
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     info!("=== ST67W611 WiFi Test with RDY (WBA55CG) ===");
@@ -96,7 +92,7 @@ async fn main(spawner: Spawner) {
         TXN_READY.signal(());
     }
 
-    unwrap!(spawner.spawn(rdy_monitor_task(wifi_rdy)));
+    spawner.spawn(unwrap!(rdy_monitor_task(wifi_rdy)));
     Timer::after(Duration::from_millis(100)).await;
 
     let mut spi_transport = SpiTransportRdy::new(spi, cs, &TXN_READY, &HDR_ACK);
@@ -231,9 +227,8 @@ async fn main(spawner: Spawner) {
                                     info!("SCAN_DONE! Found {} networks", total_networks);
                                 } else if line.starts_with(b"OK") {
                                     info!("OK received");
-                                    start = i + 1;
                                     break;
-                                } else if line.len() > 0 && !line.starts_with(b"\r") {
+                                } else if !line.is_empty() && !line.starts_with(b"\r") {
                                     info!("  Other: {:a}", line);
                                 }
 
