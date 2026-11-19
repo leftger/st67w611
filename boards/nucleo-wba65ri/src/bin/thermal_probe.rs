@@ -88,9 +88,6 @@ impl Parser {
                 if b == 0x5A {
                     self.buf[1] = b;
                     self.pos = 2;
-                } else if b == 0x5A {
-                    // Not possible (caught above), kept for clarity.
-                    self.pos = 1;
                 } else {
                     // Second header byte wrong: restart the search.
                     self.pos = 0;

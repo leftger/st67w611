@@ -51,7 +51,6 @@ use {defmt_rtt as _, panic_probe as _};
 use st67w611::net::xarxa::{self, Control, HardwareAddress, State as XarxaState, WifiDevice};
 
 mod portal;
-mod secrets;
 
 // RDY is on PB13 -> EXTI13; the hardware RNG feeds the stack seed and the
 // live telemetry stream; USB_OTG_HS carries the provisioning portal.
@@ -259,11 +258,9 @@ fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Case-insensitive search for an ASCII word.
 fn contains_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| {
-        w.iter()
-            .zip(needle)
-            .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
-    })
+    haystack
+        .windows(needle.len())
+        .any(|w| w.iter().zip(needle).all(|(a, b)| a.eq_ignore_ascii_case(b)))
 }
 
 /// Decode an HTTP/1.1 chunked body into `out`, returning the bytes written.
@@ -1089,8 +1086,9 @@ async fn main(spawner: Spawner) {
 
     // Prefer whatever the module already has stored: after provisioning over
     // the USB portal, `CWJAP` + auto-connect make it re-join by itself, which
-    // is what lets this board travel between networks. The compile-time
-    // credentials remain as a fallback for a freshly flashed board.
+    // is what lets this board travel between networks. Build-time credentials
+    // (`WIFI_SSID` / `WIFI_PASS` in the build environment) remain as a fallback
+    // for a freshly flashed board; they are never stored in the repo.
     let _ = control.at("AT+CWAUTOCONN=1").await;
     let mut associated = false;
     for _ in 0..20 {
@@ -1108,18 +1106,23 @@ async fn main(spawner: Spawner) {
 
     if associated {
         info!("step: module joined a stored network by itself");
-    } else {
-        info!("step: joining the built-in Wi-Fi credentials ...");
-        match control.connect(secrets::WIFI_SSID, secrets::WIFI_PASSWORD).await {
+    } else if let Some(ssid) = option_env!("WIFI_SSID").filter(|s| !s.is_empty()) {
+        info!("step: joining the build-time Wi-Fi credentials ...");
+        match control
+            .connect(ssid, option_env!("WIFI_PASS").unwrap_or(""))
+            .await
+        {
             Ok(()) => {
                 let _ = control.at("AT+CWAUTOCONN=1").await;
                 info!("step: Wi-Fi joined");
             }
             Err(e) => warn!(
-                "no stored network and the built-in join failed ({:?}); provision one over USB at http://192.168.7.1/",
+                "no stored network and the build-time join failed ({:?}); provision one over USB at http://192.168.7.1/",
                 e
             ),
         }
+    } else {
+        warn!("no stored network and no WIFI_SSID at build time; provision one over USB at http://192.168.7.1/");
     }
 
     loop {
