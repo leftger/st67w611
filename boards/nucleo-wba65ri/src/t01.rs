@@ -15,6 +15,24 @@ use crate::common::{self, log_lines, quoted};
 use st67w611::net::xarxa::Control;
 use st67w611::wifi::WiFi;
 
+/// The station address in an `AT+CIPSTA?` reply (`+CIPSTA:ip:"a.b.c.d"`), unless
+/// it is the all-zero placeholder the module reports before DHCP completes.
+fn station_ip(out: &st67w611::at::reply::AtOutput) -> Option<heapless::String<16>> {
+    for line in out.lines.iter() {
+        let l = line.as_str();
+        if l.starts_with("+CIPSTA:ip") {
+            if let Some(ip) = quoted(l) {
+                if ip != "0.0.0.0" && !ip.is_empty() {
+                    let mut s = heapless::String::new();
+                    let _ = s.push_str(ip);
+                    return Some(s);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Join Wi-Fi and wait for the module's own DHCP client to hand it an address.
 /// Returns that address.
 pub async fn join(control: &Control<'_>) -> Option<heapless::String<16>> {
@@ -24,23 +42,34 @@ pub async fn join(control: &Control<'_>) -> Option<heapless::String<16>> {
     let wifi = WiFi::new(control);
     for _ in 0..30 {
         if let Ok(out) = wifi.station_ip().await {
-            for line in out.lines.iter() {
-                let l = line.as_str();
-                if l.starts_with("+CIPSTA:ip") {
-                    if let Some(ip) = quoted(l) {
-                        if ip != "0.0.0.0" && !ip.is_empty() {
-                            let mut s = heapless::String::new();
-                            let _ = s.push_str(ip);
-                            return Some(s);
-                        }
-                    }
-                }
+            if let Some(ip) = station_ip(&out) {
+                return Some(ip);
             }
         }
         Timer::after_secs(1).await;
     }
     error!("no IPv4 address after 30 s");
     None
+}
+
+/// One quick look at the network: `Some(address)` if the module is associated
+/// with an access point *and* has an IPv4 address, otherwise `None`.
+///
+/// Unlike [`join`] it never tries to join anything and never waits, so a
+/// supervisor can poll it, and the module's own auto-connect (or the USB setup
+/// page) does the joining.
+pub async fn online_ip(control: &Control<'_>) -> Option<heapless::String<16>> {
+    let wifi = WiFi::new(control);
+    let ap = wifi.current_ap().await.ok()?;
+    // `+CWJAP:No AP` has no quoted SSID; a real association does.
+    let associated = ap
+        .lines
+        .iter()
+        .any(|l| l.as_str().starts_with("+CWJAP:") && l.as_str().contains('"'));
+    if !associated {
+        return None;
+    }
+    station_ip(&wifi.station_ip().await.ok()?)
 }
 
 /// Put the module in the socket mode the T01 demos use: multiple connections,
