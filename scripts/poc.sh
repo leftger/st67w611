@@ -18,6 +18,9 @@
 #
 #   --hold SECS     web servers only: stop after SECS seconds instead of running
 #                   until Ctrl-C.
+#   --flash-only    program the board, reset it, and exit. The firmware then runs by
+#                   itself with nothing attached (no probe-rs session, no RTT log), and
+#                   survives a power cycle. Use it for a board you are taking away.
 #
 # WIFI_SSID / WIFI_PASS are baked into the firmware at build time. If WIFI_SSID is
 # unset, the bins rely on whatever network the module has stored. The password is
@@ -30,10 +33,11 @@ board="$repo/boards/nucleo-wba65ri"
 chip="STM32WBA65RI"
 timeout_secs="${TIMEOUT_SECS:-180}"
 
-bin="" hold=0
+bin="" hold=0 flash_only=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --hold)    hold="${2:?--hold needs seconds}"; shift 2 ;;
+    --flash-only) flash_only=1; shift ;;
     -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     t01_net_check|t01_web_server|t02_net_check|t02_web_server) bin="$1"; shift ;;
     *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
@@ -57,6 +61,16 @@ echo "building $bin ..."
 ( cd "$board" && DEFMT_LOG="${DEFMT_LOG:-info}" cargo build --release --bin "$bin" )
 elf="$board/target/thumbv8m.main-none-eabihf/release/$bin"
 [ -f "$elf" ] || die "build produced no $elf"
+
+if [ "$flash_only" -eq 1 ]; then
+  echo "flashing $bin (no session) ..."
+  probe-rs download --chip "$chip" "$elf" || die "flashing failed"
+  # A reset starts the freshly programmed firmware from its entry point; with
+  # no debugger attached it keeps running on its own.
+  probe-rs reset --chip "$chip" || die "reset failed"
+  echo "flashed and running standalone. It will start again after a power cycle."
+  exit 0
+fi
 
 log="$(mktemp -d)/probe-rs.log"
 echo "flashing and running (log: $log) ..."
