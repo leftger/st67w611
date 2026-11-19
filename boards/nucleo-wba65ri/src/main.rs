@@ -1057,7 +1057,15 @@ async fn main(spawner: Spawner) {
             // own network stack, so it is reachable even with Wi-Fi down; the
             // Wi-Fi interface is handed over so the page can report the
             // address the board currently has on the wireless link.
-            portal::spawn(spawner, p.USB_OTG_HS, p.PD6, p.PD7, Irqs, control, iface);
+            portal::spawn(
+                spawner,
+                p.USB_OTG_HS,
+                p.PD6,
+                p.PD7,
+                Irqs,
+                control,
+                portal::WifiLink::Host(iface),
+            );
         }
         Err(e) => error!("station MAC query failed: {:?}", e),
     }
