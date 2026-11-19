@@ -800,10 +800,14 @@ pub mod network {
 
     /// DNS lookup (`AT+CIPDOMAIN="<host>",<type>`).
     pub fn dns_lookup(hostname: &str) -> Result<AtCommandString> {
-        dns_lookup_typed(hostname, 0)
+        // 2 = IPv4 only. Measured on an ST67W611 (SDK 2.0.97, T01): 0 and 1 both
+        // come back `ERROR`, 2 resolves.
+        dns_lookup_typed(hostname, 2)
     }
 
-    /// DNS lookup with an explicit address family (`0` = auto).
+    /// DNS lookup with an explicit address family: `2` = IPv4 only, `3` = IPv6
+    /// only. (`1` is IPv4-then-IPv6 in ST's headers but was rejected by the module
+    /// in testing; `0` is invalid.)
     pub fn dns_lookup_typed(hostname: &str, address_type: i32) -> Result<AtCommandString> {
         AtCommand::new("AT+CIPDOMAIN")
             .args()?
@@ -1168,7 +1172,7 @@ mod tests {
         );
         assert_eq!(
             s(network::dns_lookup("example.com")),
-            "AT+CIPDOMAIN=\"example.com\",0\r\n"
+            "AT+CIPDOMAIN=\"example.com\",2\r\n"
         );
     }
 
