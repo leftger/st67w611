@@ -4,13 +4,13 @@
 //! should not have to care. This module exposes one surface either way:
 //!
 //! * **T01** (`mission-t01`): the module owns TCP/IP and the host drives AT
-//!   sockets — [`t01::TcpSocket`].
+//!   sockets — `t01::TcpSocket`.
 //! * **T02** (`mission-t02`): the host owns TCP/IP and the xarxa-based
-//!   `embassy-net` stack runs on top — [`t02::TcpSocket`].
+//!   `embassy-net` stack runs on top — `t02::TcpSocket`.
 //!
 //! Whichever is active, [`TcpSocket`] implements
 //! [`embedded_io_async::Read`] and [`embedded_io_async::Write`], so generic
-//! application code — and [`crate::net::tls`] — works unchanged.
+//! application code — and `crate::net::tls` — works unchanged.
 
 #[cfg(feature = "mission-t01")]
 pub mod t01;

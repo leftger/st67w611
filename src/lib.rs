@@ -56,7 +56,7 @@
 //! Sockets are unified too: [`stack::TcpSocket`] resolves to the module's
 //! AT-socket adapter on T01 and to `embassy_net::tcp::TcpSocket` on T02, and in
 //! both cases implements `embedded-io-async`'s `Read`/`Write` — so application
-//! code and [`net::tls`] are firmware-independent.
+//! code and `net::tls` are firmware-independent.
 //!
 //! # Example (T01 Firmware)
 //!
@@ -155,9 +155,9 @@ use embedded_hal_async::spi::SpiDevice;
 
 /// Main driver instance (T01 firmware only)
 ///
-/// On T02 the equivalent is `crate::Driver` from [`crate::driver_t02`], which
+/// On T02 the equivalent is `crate::Driver` from `crate::driver_t02`, which
 /// exposes the same `wifi()`/`net()`/`ble()`/`fwu()`/`mqtt()` accessors over
-/// the raw-L2 [`net::xarxa`] link.
+/// the raw-L2 `net::xarxa` link.
 #[cfg(feature = "mission-t01")]
 pub struct Driver<SPI, CS>
 where
@@ -205,7 +205,7 @@ where
     ///
     /// Replaces the old `wifi_scan` / `get_ip_config` / `get_mac` /
     /// `get_wifi_state` conveniences. On T02, pass
-    /// [`crate::net::xarxa::Control`] to [`wifi::WiFi::new`] instead.
+    /// `crate::net::xarxa::Control` to `wifi::WiFi::new` instead.
     pub fn wifi(&self) -> wifi::WiFi<crate::at::transport::ProcessorTransport<'_, SPI, CS>> {
         wifi::WiFi::new(crate::at::transport::ProcessorTransport::new(
             self.processor,
@@ -272,7 +272,7 @@ where
 
     /// Create an MQTT client over this driver's AT link.
     ///
-    /// On T02, pass [`crate::net::xarxa::Control`] to
+    /// On T02, pass `crate::net::xarxa::Control` to
     /// [`crate::mqtt::Mqtt::new`] instead.
     pub fn mqtt(&self) -> mqtt::Mqtt<crate::at::transport::ProcessorTransport<'_, SPI, CS>> {
         mqtt::Mqtt::new(crate::at::transport::ProcessorTransport::new(
@@ -291,7 +291,7 @@ where
     ///
     /// The returned [`crate::ble::Ble`] is generic over
     /// [`crate::at::AtTransport`]; this uses the T01 [`AtProcessor`]-based
-    /// adapter. (On T02, pass [`crate::net::xarxa::Control`] to
+    /// adapter. (On T02, pass `crate::net::xarxa::Control` to
     /// [`crate::ble::Ble::new`] instead.)
     pub fn ble(&self) -> crate::ble::Ble<crate::at::transport::ProcessorTransport<'_, SPI, CS>> {
         crate::ble::Ble::new(crate::at::transport::ProcessorTransport::new(
@@ -303,7 +303,7 @@ where
 
     /// Create a firmware-update client over this driver's AT link.
     ///
-    /// On T02, pass [`crate::net::xarxa::Control`] to
+    /// On T02, pass `crate::net::xarxa::Control` to
     /// [`crate::fwu::Fwu::new`] instead.
     pub fn fwu(&self) -> crate::fwu::Fwu<crate::at::transport::ProcessorTransport<'_, SPI, CS>> {
         crate::fwu::Fwu::new(crate::at::transport::ProcessorTransport::new(
@@ -316,7 +316,7 @@ where
     /// Create a network configuration/services client over this driver's AT link.
     ///
     /// Covers DNS (including typed resolution), SNTP, ping, interface options
-    /// and TCP servers. On T02, pass [`crate::net::xarxa::Control`] to
+    /// and TCP servers. On T02, pass `crate::net::xarxa::Control` to
     /// [`crate::net::client::Net::new`] instead.
     pub fn net(
         &self,

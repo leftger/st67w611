@@ -2,7 +2,7 @@
 //!
 //! This wraps the [`crate::at::ble`] command builders in an ergonomic API and
 //! is generic over [`AtTransport`], so the same code runs on T01
-//! (`AtProcessor`) and T02 ([`crate::net::xarxa::Control`]).
+//! (`AtProcessor`) and T02 (`crate::net::xarxa::Control`).
 //!
 //! ```no_run
 //! use st67w611::ble::Ble;
@@ -20,8 +20,8 @@
 //!
 //! Operations whose payload follows the AT line (GATT notify/indicate/write)
 //! need a transport that implements
-//! [`AtTransport::at_with_payload`](crate::at::AtTransport::at_with_payload);
-//! otherwise they return [`Error::NotSupported`](crate::Error::NotSupported).
+//! [`AtTransport::at_with_payload`];
+//! otherwise they return [`Error::NotSupported`].
 
 use crate::at::ble as cmd;
 use crate::at::command::{wire_str, AtCommandString};

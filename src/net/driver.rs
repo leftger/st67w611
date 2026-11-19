@@ -40,7 +40,7 @@
 //! forwarding raw Ethernet frames (the same "direct link" architecture ST ships
 //! as the `ST67W6X_CLI_LWIP` reference application).
 //!
-//! Use [`crate::net::xarxa`], which plugs the module into `embassy-net`:
+//! Use `crate::net::xarxa`, which plugs the module into `embassy-net`:
 //! IPv4, IPv6, TCP, UDP, DHCP, DNS/mDNS, SLAAC, multicast and ICMP all come
 //! from the stack, and `embedded-tls` can be layered on top of a TCP socket.
 //!

@@ -2,8 +2,8 @@
 //! commands.
 //!
 //! [`TcpSocket`] is a thin `embedded-io-async` adapter over
-//! [`NetworkDevice`](crate::net::NetworkDevice), so the same application code
-//! (and [`crate::net::tls`]) works on T01 and T02 alike.
+//! [`NetworkDevice`], so the same application code
+//! (and `crate::net::tls`) works on T01 and T02 alike.
 
 use embassy_time::Duration;
 use embedded_hal::digital::OutputPin;

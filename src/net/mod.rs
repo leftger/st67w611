@@ -5,9 +5,9 @@
 //! * the **transport-generic clients** ([`Net`]) — interface options, DNS,
 //!   SNTP, ping, TCP servers, TLS options — available on either firmware;
 //! * the **firmware's own stack glue**:
-//!   * T01 (`mission-t01`): the module owns TCP/IP, so [`NetworkDevice`] and
+//!   * T01 (`mission-t01`): the module owns TCP/IP, so `NetworkDevice` and
 //!     the AT socket API are the data path;
-//!   * T02 (`mission-t02`): the host owns TCP/IP, so [`xarxa`] provides the
+//!   * T02 (`mission-t02`): the host owns TCP/IP, so `xarxa` provides the
 //!     raw-L2 driver for the xarxa-based `embassy-net` stack.
 
 // Transport-generic high-level client (works on both firmwares)

@@ -59,7 +59,7 @@ pub const STALL_DRAIN_MAX: usize = 4;
 /// Minimum delay between a CS deassert and the next assert.
 ///
 /// ST's port refuses to re-assert CS until 2 us have elapsed since the previous
-/// deassert; see the `spi_port_set_cs` comment in [`Self::exchange`].
+/// deassert; see the `spi_port_set_cs` comment in `Self::exchange`.
 pub const CS_GAP: Duration = Duration::from_micros(2);
 
 /// Scratch size shared by the TX and RX staging buffers.
@@ -189,7 +189,7 @@ where
     /// Returns how many bytes were copied. `out` may be empty when only a
     /// header needs to be clocked.
     ///
-    /// The peer's RX-stall handshake is handled here; see [`Self::one_exchange`].
+    /// The peer's RX-stall handshake is handled here; see `Self::one_exchange`.
     pub async fn exchange(&mut self, tx: Option<Outbound<'_>>, out: &mut [u8]) -> Result<Received> {
         // When the module reports its RX stalled it will not accept a payload
         // yet, so the frame has to wait. ST's driver keeps the frame queued and

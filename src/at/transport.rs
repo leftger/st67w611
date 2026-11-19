@@ -5,7 +5,7 @@
 //!
 //! * T01: [`ProcessorTransport`], an adapter over
 //!   [`crate::at::processor::AtProcessor`] and the SPI bus.
-//! * T02: [`crate::net::xarxa::Control`], which shares the SPI link with the
+//! * T02: `crate::net::xarxa::Control`, which shares the SPI link with the
 //!   raw-L2 data path.
 
 use embassy_futures::select::{select, Either};
@@ -46,7 +46,7 @@ pub trait AtTransport {
 /// A shared transport is itself a transport.
 ///
 /// This lets a driver hand out clients that **borrow** its transport, which is
-/// what T02 needs: [`crate::net::xarxa::Control`] is stateful and cannot be
+/// what T02 needs: `crate::net::xarxa::Control` is stateful and cannot be
 /// duplicated, so `&Control` is the transport.
 impl<T: AtTransport + ?Sized> AtTransport for &T {
     async fn at(&self, command: &str) -> Result<AtOutput> {
