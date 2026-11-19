@@ -79,6 +79,9 @@ impl<T: AtTransport> Mqtt<T> {
     ///
     /// `disable_clean_session` is `1` to disable the clean session; `will_qos`
     /// is the Last Will QoS; `will_retain` selects the Will retain flag.
+    // Mirrors the positional parameters of `AT+MQTTCONNCFG`; changing the
+    // signature would break the public API.
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_conn_config(
         &self,
         link_id: u8,

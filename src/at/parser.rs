@@ -11,6 +11,10 @@ pub const MAX_LINE_LEN: usize = 512;
 pub type LineBuffer = String<MAX_LINE_LEN>;
 
 /// AT response type
+// `Data` carries two full line buffers, so the enum is large next to its unit
+// variants. Boxing it would need `alloc`, which this `no_std` crate does not use,
+// and values are short-lived (one per parsed line), so the size is accepted.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum AtResponse {
