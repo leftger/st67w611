@@ -152,7 +152,7 @@ you can compare them directly. The only difference is **who runs TCP/IP**:
 | Demo | T01: the module runs TCP/IP | T02: the MCU runs TCP/IP (`embassy-net`) |
 |---|---|---|
 | Network self-check | `t01_net_check`: join, DNS, ping, SNTP, HTTP GET (6 checks) | `t02_net_check`: join, DHCP, DNS, SNTP, HTTP GET (5 checks; no ICMP client, so no ping) |
-| Host a website | `t01_web_server`: `AT+CIPSERVER`, the MCU answers over AT | `t02_web_server`: `TcpListener` on the MCU |
+| Host a website | `t01_web_server`: `AT+CIPSERVER`, the MCU answers over AT; also a USB setup page (below) | `t02_web_server`: `TcpListener` on the MCU |
 
 The T02 server serves a small status page (`/`, `/json`, 404). The T01 server is a
 "mission control" dashboard: a live UTC clock from the module's own SNTP client, plus
@@ -169,6 +169,32 @@ scripts/ncp_switch.sh t01        # or t02
 WIFI_SSID=... WIFI_PASS=... scripts/poc.sh t01_net_check
 scripts/poc.sh t02_web_server
 ```
+
+### Taking `t01_web_server` on the road
+
+`t01_web_server` is built to run unattended. Flash it so it keeps running with
+nothing attached (it also survives a power cycle):
+
+```sh
+scripts/poc.sh t01_web_server --flash-only
+```
+
+It then serves two websites at once:
+
+- **Over Wi-Fi**, from the module: the "mission control" dashboard at the address
+  the module has on whatever network it joined.
+- **Over USB**, from the MCU: plug the board's **user USB-C port (CN9)** into a laptop.
+  It shows up as a USB Ethernet adapter and hands the laptop an address
+  (`192.168.7.10`+); open <http://192.168.7.1/>. That page scans for access points,
+  lets you pick one and type its password, and joins it. It needs no Wi-Fi, so it works
+  at a new place where the stored network is absent.
+
+It looks after itself: when Wi-Fi drops, or the setup page moves the board to another
+network, it waits for the link and starts the server again; a watchdog resets the
+board if it ever wedges or panics. If a join fails (a mistyped password, a network out
+of range) the setup page says so and puts the board back on the network it was on.
+No Wi-Fi credentials are compiled in: it uses the network the module has stored, or the
+one you set up over USB.
 
 A demo needs the module on its own profile and says so if not. The old dashboard
 in `boards/nucleo-wba65ri/src/main.rs` is T02-only. Shared code lives in

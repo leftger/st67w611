@@ -47,12 +47,13 @@
 //! `embassy_net::Stack::add_iface_borrowed(&mut device)` and spawn
 //! [`Runner::run`] in the background.
 
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use embassy_futures::select::{select3, Either3};
 use embassy_net_driver_channel as ch;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
+use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use embedded_hal::digital::OutputPin;
@@ -181,6 +182,10 @@ pub struct State<const N_RX: usize, const N_TX: usize> {
     /// The raw bytes of the last `AT+CIPRECVDATA`, which arrive length-prefixed
     /// rather than as lines (see `RawState`).
     recv_data: Signal<CriticalSectionRawMutex, heapless::Vec<u8, RECV_MAX>>,
+    /// Serialises AT transactions, so several tasks can share one `Control`.
+    at_lock: Mutex<CriticalSectionRawMutex, ()>,
+    /// How many times the module has announced that it booted (`ready`).
+    boots: AtomicU32,
 }
 
 impl<const N_RX: usize, const N_TX: usize> State<N_RX, N_TX> {
@@ -195,6 +200,8 @@ impl<const N_RX: usize, const N_TX: usize> State<N_RX, N_TX> {
             ping_done: Signal::new(),
             net_events: Channel::new(),
             recv_data: Signal::new(),
+            at_lock: Mutex::new(()),
+            boots: AtomicU32::new(0),
         }
     }
 }
@@ -219,6 +226,8 @@ pub struct Control<'d> {
     ping_done: &'d Signal<CriticalSectionRawMutex, AtOutput>,
     net_events: &'d Channel<CriticalSectionRawMutex, LineBuffer, NET_EVENTS_MAX>,
     recv_data: &'d Signal<CriticalSectionRawMutex, heapless::Vec<u8, RECV_MAX>>,
+    at_lock: &'d Mutex<CriticalSectionRawMutex, ()>,
+    boots: &'d AtomicU32,
     /// Lets the control plane report Wi-Fi link state to embassy-net.
     state: ch::StateRunner<'d>,
     timeout: Duration,
@@ -228,6 +237,15 @@ impl<'d> Control<'d> {
     /// Override the per-transaction timeout.
     pub fn set_timeout(&mut self, timeout: Duration) {
         self.timeout = timeout;
+    }
+
+    /// How many times the module has announced that it booted, since this driver
+    /// started. A change means it restarted (a reset, a brownout, an update), so
+    /// everything held on the module (sockets, a server) is gone and must be set up
+    /// again. Unlike [`Self::wait_ready`], reading it consumes nothing, so several
+    /// tasks can watch it.
+    pub fn boot_count(&self) -> u32 {
+        self.boots.load(Ordering::Relaxed)
     }
 
     /// Wait for the module to announce that it has finished booting.
@@ -303,6 +321,12 @@ impl<'d> Control<'d> {
         // and the runner would otherwise still be collecting a response that
         // this side has already given up on.
         let timeout = request.timeout;
+
+        // One transaction at a time. The response slot is shared, so two tasks
+        // issuing commands at once (say a web server and a setup page) would
+        // otherwise wipe or steal each other's reply. The lock is held for the
+        // whole round trip, including a long join or scan.
+        let _guard = self.at_lock.lock().await;
 
         // Drop any stale response left by a previous timed-out transaction.
         self.at_resp.reset();
@@ -463,6 +487,7 @@ pub struct Runner<'d, SPI, CS, const N_RX: usize, const N_TX: usize> {
     ping_done: &'d Signal<CriticalSectionRawMutex, AtOutput>,
     net_events: &'d Channel<CriticalSectionRawMutex, LineBuffer, NET_EVENTS_MAX>,
     recv_data: &'d Signal<CriticalSectionRawMutex, heapless::Vec<u8, RECV_MAX>>,
+    boots: &'d AtomicU32,
     ready: &'static Signal<CriticalSectionRawMutex, ()>,
     rx: [u8; RX_SCRATCH],
     // AT transaction scratch.
@@ -531,6 +556,8 @@ where
         ping_done,
         net_events,
         recv_data,
+        at_lock,
+        boots,
     } = state;
     let (ch_runner, device) = ch::new(ch, HardwareAddress::Ethernet(mac), MTU);
     let state_runner = ch_runner.state_runner();
@@ -549,6 +576,7 @@ where
         ping_done,
         net_events,
         recv_data,
+        boots,
         ready,
         rx: [0; RX_SCRATCH],
         at_buf: LineBuffer::new(),
@@ -569,6 +597,8 @@ where
         ping_done,
         net_events,
         recv_data,
+        at_lock,
+        boots,
         state: state_runner,
         timeout: AT_TIMEOUT,
     };
@@ -731,6 +761,7 @@ where
             #[cfg(feature = "defmt")]
             defmt::trace!("unsolicited line: |{}|", self.at_buf.as_str());
             if self.at_buf.starts_with("ready") {
+                self.boots.fetch_add(1, Ordering::Relaxed);
                 self.ready_announced.signal(());
             } else if self.at_buf.starts_with("+CWLAP:") {
                 let _ = self.scan_buf.push(self.at_buf.clone());
@@ -762,6 +793,14 @@ where
         // Bring-up tracing: what the module actually said, line by line.
         #[cfg(feature = "defmt")]
         defmt::trace!("at line: |{}|", self.at_buf.as_str());
+        // A boot announcement can land inside a transaction (a command sent as the
+        // module restarts); it must still be counted, and is not a reply line.
+        if self.at_buf.as_str() == "ready" {
+            self.boots.fetch_add(1, Ordering::Relaxed);
+            self.ready_announced.signal(());
+            self.at_buf.clear();
+            return;
+        }
         // Socket events can land in the middle of any command's reply; they
         // belong to the application, not to that command.
         if is_net_event(&self.at_buf) {

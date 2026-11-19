@@ -58,7 +58,7 @@ pub const PAGE: &str = concat!(
     "$('w').textContent=j.weather||'\\u2026';$('i').textContent=j.iss||'\\u2026';",
     "$('p').textContent=j.people?j.people+' humans in orbit':'\\u2026';",
     "$('a').textContent=j.activity||'\\u2026';",
-    "$('r').textContent=j.rssi?j.rssi+' dBm \\u00b7 channel '+j.channel:'\\u2026';",
+    "$('r').textContent=j.rssi?j.rssi+' dBm \\u00b7 channel '+j.channel+' \\u00b7 '+j.ip:'\\u2026';",
     "$('m').textContent='SDK '+j.sdk+' \\u00b7 up '+j.up+' s \\u00b7 '+j.reqs+' requests'}catch(e){}}",
     "go();setInterval(go,5000);setInterval(tick,250);",
     "</script>"
@@ -73,6 +73,10 @@ pub struct Dash {
     pub rssi: i32,
     pub channel: u32,
     pub sdk: heapless::String<16>,
+    /// The module's current IPv4 address (changes when the board joins another
+    /// network), and whether it is associated with an access point at all.
+    pub ip: heapless::String<16>,
+    pub online: bool,
     /// Module time at the last SNTP read, and when we read it.
     sntp_unix: u64,
     sntp_at: Option<Instant>,
@@ -88,6 +92,8 @@ impl Dash {
             rssi: 0,
             channel: 0,
             sdk: heapless::String::new(),
+            ip: heapless::String::new(),
+            online: false,
             sntp_unix: 0,
             sntp_at: None,
         }
@@ -116,16 +122,24 @@ impl Dash {
 
     /// Wi-Fi signal strength and channel (`AT+CWJAP?`). The SSID and BSSID are
     /// deliberately not kept: this page is readable by everyone on the network.
-    pub async fn refresh_link(&mut self, control: &Control<'_>) {
-        let Ok(out) = control.at("AT+CWJAP?").await else {
-            return;
-        };
+    ///
+    /// Returns whether the module is associated with an access point, or `None`
+    /// if it could not be asked (a transport hiccup is not evidence either way).
+    pub async fn refresh_link(&mut self, control: &Control<'_>) -> Option<bool> {
+        let out = control.at("AT+CWJAP?").await.ok()?;
+        let mut associated = false;
         for line in out.lines.iter() {
-            if let Some((channel, rssi)) = parse_cwjap(line.as_str()) {
+            let l = line.as_str();
+            // `+CWJAP:No AP` has no quoted SSID; a real association does.
+            if l.starts_with("+CWJAP:") && l.contains('"') {
+                associated = true;
+            }
+            if let Some((channel, rssi)) = parse_cwjap(l) {
                 self.channel = channel;
                 self.rssi = rssi;
             }
         }
+        Some(associated)
     }
 
     /// SDK version from `AT+GMR` (`component_version_sdk_2.0.97`).
@@ -195,9 +209,11 @@ impl Dash {
         json_str(&mut j, &self.activity);
         let _ = write!(
             j,
-            ",\"rssi\":{},\"channel\":{},\"sdk\":",
-            self.rssi, self.channel
+            ",\"rssi\":{},\"channel\":{},\"online\":{},\"ip\":",
+            self.rssi, self.channel, self.online
         );
+        json_str(&mut j, &self.ip);
+        let _ = j.push_str(",\"sdk\":");
         json_str(&mut j, &self.sdk);
         let _ = write!(j, ",\"up\":{},\"reqs\":{}}}", uptime_s, requests);
         j

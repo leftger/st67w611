@@ -12,6 +12,18 @@ published: see "Release status" at the end.
 
 ### Added
 
+- **`t01_web_server` as a standalone, supervised firmware**, for taking the board
+  on the road. Besides the Wi-Fi dashboard it serves a second website over the
+  user USB-C port (a CDC-NCM Ethernet gadget with its own DHCP server, at
+  `http://192.168.7.1/`) that scans for access points and joins one you pick. A
+  supervisor waits for the module to be associated and addressed, starts the server,
+  and starts it again when the link drops or the module restarts; an independent
+  watchdog resets the board if it wedges or panics. `scripts/poc.sh <bin>
+  --flash-only` programs the board and resets it so it runs with nothing attached.
+- `Control` serialises AT transactions, so several tasks can share one (the web
+  server and the setup page both use the module's single AT channel), and
+  `Control::boot_count` counts the module's boot announcements so a restart (which
+  empties the module's sockets) can be noticed.
 - **T01 and T02 behind one typed API.** The typed `WiFi`, `Net`, `Mqtt`, `Fwu`
   and BLE clients are generic over `AtTransport`, so the same code runs on both
   module firmwares. (The HTTP client and power management remain T01-only.)
@@ -68,6 +80,12 @@ published: see "Release status" at the end.
 
 ### Fixed
 
+- **The Wi-Fi setup page reported success for networks that never associated.**
+  `AT+CWJAP` answers `OK` when the request is *accepted*; the association (and
+  DHCP) finish afterwards, and a wrong password or an unreachable network answers
+  `OK` too. The page now waits until the module really reports the new network (and,
+  on T01, an address), and otherwise forgets the attempt and resets the module so it
+  rejoins the network it had before, instead of leaving the board stranded offline.
 - **`xarxa` AT transactions with a payload** (`AT+CIPSEND`, `AT+OTASEND`,
   `AT+BLEGATTSNTFY`): the module answers `OK` then `>`, often in one frame, and
   for `AT+CIPSEND` the `>` has no trailing newline. The runner treated the first

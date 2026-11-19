@@ -38,6 +38,59 @@ use static_cell::StaticCell;
 pub type UsbDriver = Driver<'static, peripherals::USB_OTG_HS>;
 type NcmRunner = Runner<'static, UsbDriver>;
 
+/// Where the board's Wi-Fi address comes from.
+///
+/// * **T02**: the module is only a MAC/PHY, and the address is the DHCP lease of
+///   the host's own `embassy-net` interface, so the portal reads it from there.
+/// * **T01**: the module owns TCP/IP, so the portal asks it (`AT+CIPSTA?`).
+///
+/// The portal itself is identical either way: it only needs the module's AT link
+/// to scan and join, and its own USB stack to serve the page.
+// Each firmware that includes this file constructs only one of the two variants
+// (the T02 dashboard uses `Host`, the T01 web server `Module`), so the other is
+// "never constructed" from that binary's point of view.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub enum WifiLink {
+    /// T02: read the address from the host stack's Wi-Fi interface.
+    Host(Iface<'static>),
+    /// T01: ask the module.
+    Module,
+}
+
+impl WifiLink {
+    /// The IPv4 address(es) on Wi-Fi, comma-separated; empty if none yet.
+    async fn ip(self, control: &Control<'static>) -> heapless::String<160> {
+        match self {
+            WifiLink::Host(iface) => format_ip_addrs(iface),
+            WifiLink::Module => module_ip(control).await,
+        }
+    }
+}
+
+/// The station address the module reports (`+CIPSTA:ip:"a.b.c.d"`), if it has one.
+async fn module_ip(control: &Control<'static>) -> heapless::String<160> {
+    let mut out = heapless::String::<160>::new();
+    let Ok(reply) = control.at("AT+CIPSTA?").await else {
+        return out;
+    };
+    for line in reply.lines.iter() {
+        let l = line.as_str();
+        if !l.starts_with("+CIPSTA:ip") {
+            continue;
+        }
+        let Some(start) = l.find('"') else { continue };
+        let Some(len) = l[start + 1..].find('"') else {
+            continue;
+        };
+        let ip = &l[start + 1..start + 1 + len];
+        if ip != "0.0.0.0" && !ip.is_empty() {
+            let _ = out.push_str(ip);
+        }
+    }
+    out
+}
+
 /// Runs the USB device state machine.
 #[embassy_executor::task]
 pub async fn usb_task(mut device: UsbDevice<'static, UsbDriver>) -> ! {
@@ -87,7 +140,7 @@ button.alt{background:#21262d;border-color:var(--bd)}
 /// couple of seconds and the list is only useful when freshly taken.
 async fn render_page(
     control: &Control<'static>,
-    wifi_iface: Iface<'static>,
+    wifi: WifiLink,
     usb_iface: Iface<'static>,
     message: Option<&str>,
 ) -> heapless::String<6144> {
@@ -118,7 +171,7 @@ async fn render_page(
     // The Wi-Fi address lives in the host's embassy-net stack on T02: the
     // module is only a MAC/PHY there, so `AT+CIPSTA?` would not have it. The
     // USB address comes from this portal's own stack.
-    let wifi_ip = format_ip_addrs(wifi_iface);
+    let wifi_ip = wifi.ip(control).await;
     let mut usb_ip = format_ip_addrs(usb_iface);
     if usb_ip.is_empty() {
         let _ = usb_ip.push_str("no address");
@@ -133,8 +186,16 @@ async fn render_page(
         let _ = out.push_str("<div class=\"ip\">Wi-Fi IP: <code>");
         if wifi_ip.is_empty() {
             let _ = out.push_str("waiting for DHCP");
-        } else {
+        } else if wifi_ip.contains(',') {
             push_escaped(&mut out, wifi_ip.as_str());
+        } else {
+            // One address: make it a link. It opens only from a machine on that
+            // same Wi-Fi network, which is exactly the point of showing it.
+            let _ = out.push_str("<a href=\"http://");
+            push_escaped(&mut out, wifi_ip.as_str());
+            let _ = out.push_str("/\">");
+            push_escaped(&mut out, wifi_ip.as_str());
+            let _ = out.push_str("</a>");
         }
         let _ = out.push_str("</code></div>\n");
     }
@@ -315,7 +376,7 @@ fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
 pub async fn portal_task(
     stack: Stack<'static>,
     control: &'static Control<'static>,
-    wifi_iface: Iface<'static>,
+    wifi: WifiLink,
     usb_iface: Iface<'static>,
 ) -> ! {
     let mut rx = [0u8; 512];
@@ -352,7 +413,7 @@ pub async fn portal_task(
         let req = &req[..n];
 
         let (page, message, is_connect) = if req.starts_with(b"GET /connect?") {
-            (None, Some(handle_connect(req, control).await), true)
+            (None, Some(handle_connect(req, control, wifi).await), true)
         } else {
             (None, None, false)
         };
@@ -362,7 +423,7 @@ pub async fn portal_task(
         // join still shows the (fresh) network list with the error on top.
         let body: heapless::String<6144> = match page {
             Some(p) => p,
-            None => render_page(control, wifi_iface, usb_iface, message.as_deref()).await,
+            None => render_page(control, wifi, usb_iface, message.as_deref()).await,
         };
 
         const HEADER: &str = concat!(
@@ -386,8 +447,34 @@ pub async fn portal_task(
     }
 }
 
+/// The SSID the module is associated with right now (`+CWJAP:"<ssid>",...`).
+async fn current_ssid(control: &Control<'static>) -> Option<heapless::String<96>> {
+    let reply = control.at("AT+CWJAP?").await.ok()?;
+    for line in reply.lines.iter() {
+        let l = line.as_str();
+        if !l.starts_with("+CWJAP:") {
+            continue;
+        }
+        // `+CWJAP:No AP` has no quoted SSID.
+        let start = l.find('"')? + 1;
+        let len = l[start..].find('"')?;
+        let mut ssid = heapless::String::new();
+        ssid.push_str(&l[start..start + len]).ok()?;
+        return Some(ssid);
+    }
+    None
+}
+
 /// Join the network named in the request and remember it.
-async fn handle_connect(req: &[u8], control: &Control<'static>) -> heapless::String<256> {
+///
+/// Joining means leaving the current network first, so a mistyped password or a
+/// network out of range would strand the board offline. The previous network is
+/// therefore put back (from the module's stored credentials) if the new join fails.
+async fn handle_connect(
+    req: &[u8],
+    control: &Control<'static>,
+    wifi: WifiLink,
+) -> heapless::String<256> {
     let mut msg = heapless::String::<256>::new();
 
     // Request line: `GET /connect?<query> HTTP/1.1`
@@ -418,36 +505,113 @@ async fn handle_connect(req: &[u8], control: &Control<'static>) -> heapless::Str
     }
 
     info!("portal: joining '{}'", ssid.as_str());
+    let previous = current_ssid(control).await;
     // A failed disconnect is fine (we may not be associated).
     let _ = control.disconnect().await;
-    match control.connect(ssid.as_str(), pass.as_str()).await {
+
+    // `AT+CWJAP` answering OK only means the module accepted the request. The
+    // association (and, on T01, DHCP) finishes afterwards, and a wrong password or
+    // a network out of range answers OK too. So the reply is not trusted: wait
+    // until the module really reports being on the network.
+    let accepted = control.connect(ssid.as_str(), pass.as_str()).await;
+    let joined = match &accepted {
+        Ok(_) => wait_joined(control, wifi, ssid.as_str(), 25).await,
+        Err(_) => false,
+    };
+
+    if joined {
+        // Belt and braces: the module stores a network once it has associated,
+        // and the explicit flag makes it re-join by itself after a power cycle.
+        let mut cmd = heapless::String::<160>::new();
+        let _ = write!(
+            cmd,
+            "AT+CWCREDADD=\"{}\",\"{}\"",
+            ssid.as_str(),
+            pass.as_str()
+        );
+        if let Err(e) = control.at(cmd.as_str()).await {
+            warn!("portal: could not store credentials: {:?}", e);
+        }
+        if let Err(e) = control.at("AT+CWAUTOCONN=1").await {
+            warn!("portal: could not enable auto-connect: {:?}", e);
+        }
+        let _ = write!(
+            msg,
+            "Connected to '{}' and saved it. This page will stop working once the board leaves USB; find it on the Wi-Fi network instead.",
+            ssid.as_str()
+        );
+        return msg;
+    }
+
+    match accepted {
+        Err(e) => {
+            let _ = write!(msg, "Could not join '{}': {:?}.", ssid.as_str(), e);
+        }
         Ok(_) => {
-            // Belt and braces: CWJAP stores the credentials, and the explicit
-            // flag makes the module re-join by itself after a power cycle.
-            let mut cmd = heapless::String::<160>::new();
-            let _ = write!(
-                cmd,
-                "AT+CWCREDADD=\"{}\",\"{}\"",
-                ssid.as_str(),
-                pass.as_str()
-            );
-            if let Err(e) = control.at(cmd.as_str()).await {
-                warn!("portal: could not store credentials: {:?}", e);
-            }
-            if let Err(e) = control.at("AT+CWAUTOCONN=1").await {
-                warn!("portal: could not enable auto-connect: {:?}", e);
-            }
             let _ = write!(
                 msg,
-                "Connected to '{}' and saved it. This page will stop working once the board leaves USB; find it on the Wi-Fi network instead.",
+                "Could not join '{}': no association (wrong password, or out of range?).",
                 ssid.as_str()
             );
         }
-        Err(e) => {
-            let _ = write!(msg, "Could not join '{}': {:?}", ssid.as_str(), e);
+    }
+    warn!("portal: join of '{}' failed", ssid.as_str());
+
+    // Forget the attempt, then get back to where the board was. Leaving it on a
+    // network that never worked would strand it offline.
+    let mut cmd = heapless::String::<160>::new();
+    let _ = write!(cmd, "AT+CWCREDDEL=\"{}\"", ssid.as_str());
+    let _ = control.at(cmd.as_str()).await;
+    if let Some(prev) = previous {
+        if go_back(control, wifi, prev.as_str()).await {
+            info!("portal: back on '{}'", prev.as_str());
+            let _ = write!(msg, " Went back to '{}'.", prev.as_str());
+        } else {
+            warn!("portal: could not get back to '{}'", prev.as_str());
+            let _ = write!(
+                msg,
+                " Could not get back to '{}'; power-cycle the board.",
+                prev.as_str()
+            );
         }
     }
     msg
+}
+
+/// Wait up to `secs` seconds for the module to report that it is associated with
+/// `ssid` and, when it owns TCP/IP (T01), that it has an address.
+///
+/// On T02 the address is the host stack's DHCP lease, which this function cannot
+/// see, so association alone counts.
+async fn wait_joined(control: &Control<'static>, wifi: WifiLink, ssid: &str, secs: u32) -> bool {
+    for _ in 0..secs {
+        if current_ssid(control).await.as_deref() == Some(ssid) {
+            match wifi {
+                WifiLink::Host(_) => return true,
+                WifiLink::Module => {
+                    if !wifi.ip(control).await.is_empty() {
+                        return true;
+                    }
+                }
+            }
+        }
+        embassy_time::Timer::after_secs(1).await;
+    }
+    false
+}
+
+/// Return to the network the board was on before a failed join.
+///
+/// The module only persists a network once it has associated with it, so the one it
+/// had saved is still the old one; a reset makes it re-join that. (`AT+RST`: not
+/// `AT+RESTORE`, which would erase everything.)
+async fn go_back(control: &Control<'static>, wifi: WifiLink, prev: &str) -> bool {
+    let _ = control.at("AT+RST").await;
+    // It announces itself again when it has rebooted.
+    let _ = control
+        .wait_ready(embassy_time::Duration::from_secs(15))
+        .await;
+    wait_joined(control, wifi, prev, 30).await
 }
 
 /// Bring the portal up: USB device, NCM gadget, its own net stack, DHCP
@@ -459,7 +623,7 @@ pub fn spawn<B>(
     dm: embassy_stm32::Peri<'static, peripherals::PD7>,
     irq: B,
     control: &'static Control<'static>,
-    wifi_iface: Iface<'static>,
+    wifi: WifiLink,
 ) where
     B: Binding<
             <peripherals::USB_OTG_HS as usb::Instance>::Interrupt,
@@ -530,7 +694,5 @@ pub fn spawn<B>(
     );
     defmt::unwrap!(iface.set_dhcpv4_server(Some(dhcp)));
 
-    spawner.spawn(defmt::unwrap!(portal_task(
-        stack, control, wifi_iface, iface
-    )));
+    spawner.spawn(defmt::unwrap!(portal_task(stack, control, wifi, iface)));
 }

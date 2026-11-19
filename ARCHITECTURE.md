@@ -130,6 +130,19 @@ handles each:
   `AT_LINES_MAX` and would mangle `\r\n` inside the data).
 * **`AT+CIPDOMAIN="<host>",<type>`** needs `2` (IPv4 only) or `3` (IPv6 only);
   `0` and `1` are answered with `ERROR`.
+* **`AT+CWJAP` answers `OK` when the join is merely accepted.** The association,
+  and on T01 the DHCP lease, finish afterwards (ST's host waits for the module's
+  `CONNECTED` / reason / `GOT IP` events), so `OK` is not proof: a wrong password or
+  an out-of-range network gets it too. Check `AT+CWJAP?` (a quoted SSID means
+  associated) and `AT+CIPSTA?`. The module persists a network only once it has
+  associated with it, so after a failed attempt `AT+RST` makes it rejoin the previous
+  one (`AT+RESTORE` would erase everything: avoid it).
+* **The module may announce `ready` more than once per boot.** `Control::boot_count`
+  counts the banners; watch it from a supervisor, and let it settle for a few seconds
+  before reacting, or a restart is acted on once per banner.
+* **One AT channel.** `Control` takes a lock for each transaction, so a web server and
+  a setup page can share it; a long scan or join (up to 30 s) holds it, and pauses
+  everything else for that long.
 * **OTA (`AT+OTASEND`)**: the 512-byte FWU header is sent as its own `OTASEND`,
   then the body in chunks that are a multiple of 256 bytes. The same OTA path
   switches the module between the T01 and T02 images in either direction.

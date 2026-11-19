@@ -46,6 +46,7 @@ pub async fn bring_up(
         control,
         device,
         mut rng,
+        ..
     } = started;
 
     // The seed feeds TCP initial sequence numbers, so take it from the hardware
