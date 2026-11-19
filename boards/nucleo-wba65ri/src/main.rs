@@ -1049,8 +1049,10 @@ async fn main(spawner: Spawner) {
             spawner.spawn(unwrap!(ntp_task(stack)));
 
             // Provisioning portal on the user USB-C connector. It runs on its
-            // own network stack, so it is reachable even with Wi-Fi down.
-            portal::spawn(spawner, p.USB_OTG_HS, p.PD6, p.PD7, Irqs, control);
+            // own network stack, so it is reachable even with Wi-Fi down; the
+            // Wi-Fi interface is handed over so the page can report the
+            // address the board currently has on the wireless link.
+            portal::spawn(spawner, p.USB_OTG_HS, p.PD6, p.PD7, Irqs, control, iface);
         }
         Err(e) => error!("station MAC query failed: {:?}", e),
     }
