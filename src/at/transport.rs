@@ -104,9 +104,7 @@ impl<T: AtTransport + ?Sized> AtTransportExt for T {}
 /// Complete an AT command with CRLF.
 fn command_bytes(command: &str) -> Result<AtCommandString> {
     let mut bytes = AtCommandString::new();
-    bytes
-        .push_str(command)
-        .map_err(|_| Error::BufferTooSmall)?;
+    bytes.push_str(command).map_err(|_| Error::BufferTooSmall)?;
     bytes.push_str("\r\n").map_err(|_| Error::BufferTooSmall)?;
     Ok(bytes)
 }

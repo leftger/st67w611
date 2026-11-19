@@ -94,7 +94,9 @@ impl<T: AtTransport> Net<T> {
     /// With buffered mode on, incoming data is pulled with
     /// [`receive`](Self::receive).
     pub async fn set_receive_mode(&self, buffered: bool) -> Result<()> {
-        self.transport.exec_ok(cmd::set_receive_mode(buffered)).await
+        self.transport
+            .exec_ok(cmd::set_receive_mode(buffered))
+            .await
     }
 
     /// Set a socket's receive buffer length (`AT+CIPRECVBUF=<link>,<len>`).
@@ -222,7 +224,13 @@ impl<T: AtTransport> Net<T> {
     // ---- TCP server ------------------------------------------------------
 
     /// Start a TCP server (`AT+CIPSERVER=1,...`).
-    pub async fn start_server(&self, port: u16, ip: &str, backlog: u16, timeout: u32) -> Result<()> {
+    pub async fn start_server(
+        &self,
+        port: u16,
+        ip: &str,
+        backlog: u16,
+        timeout: u32,
+    ) -> Result<()> {
         self.transport
             .exec_ok(cmd::start_server(port, ip, backlog, timeout))
             .await
@@ -281,7 +289,9 @@ impl<T: AtTransport> Net<T> {
         // OK or ERROR are both acceptable: the file may not exist yet.
         let _ = self
             .transport
-            .exec(crate::at::command::filesystem::fs_delete(cert_type.filename()))
+            .exec(crate::at::command::filesystem::fs_delete(
+                cert_type.filename(),
+            ))
             .await?;
         Ok(())
     }
@@ -399,7 +409,10 @@ mod tests {
         block_on(net.lookup("example.com")).unwrap();
         assert_eq!(net.transport().last(), "AT+CIPDOMAIN=\"example.com\",0");
         block_on(net.set_dns(true, "8.8.8.8", Some("8.8.4.4"))).unwrap();
-        assert_eq!(net.transport().last(), "AT+CIPDNS=1,\"8.8.8.8\",\"8.8.4.4\"");
+        assert_eq!(
+            net.transport().last(),
+            "AT+CIPDNS=1,\"8.8.8.8\",\"8.8.4.4\""
+        );
         block_on(net.dns()).unwrap();
         assert_eq!(net.transport().last(), "AT+CIPDNS?");
     }

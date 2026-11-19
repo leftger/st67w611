@@ -110,7 +110,6 @@ impl fmt::Display for Error {
     }
 }
 
-
 /// Result type alias using driver Error
 pub type Result<T> = core::result::Result<T, Error>;
 

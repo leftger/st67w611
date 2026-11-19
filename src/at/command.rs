@@ -147,7 +147,8 @@ impl AtCommand {
 /// Format an IPv4 address as `a.b.c.d`.
 fn ipv4_string(ip: &Ipv4Address) -> Result<String<16>> {
     let mut s = String::<16>::new();
-    write!(s, "{}.{}.{}.{}", ip.0[0], ip.0[1], ip.0[2], ip.0[3]).map_err(|_| Error::BufferTooSmall)?;
+    write!(s, "{}.{}.{}.{}", ip.0[0], ip.0[1], ip.0[2], ip.0[3])
+        .map_err(|_| Error::BufferTooSmall)?;
     Ok(s)
 }
 
@@ -329,10 +330,7 @@ pub mod wifi {
 
     /// Disconnect with an explicit restore flag (`AT+CWQAP=<restore>`).
     pub fn disconnect_with(restore: u32) -> Result<AtCommandString> {
-        AtCommand::new("AT+CWQAP")
-            .args()?
-            .arg_int(restore)?
-            .build()
+        AtCommand::new("AT+CWQAP").args()?.arg_int(restore)?.build()
     }
 
     /// Scan for access points (`AT+CWLAP`).
@@ -413,7 +411,12 @@ pub mod wifi {
     }
 
     /// Configure the Soft-AP (`AT+CWSAP="<ssid>","<pwd>",<ch>,<enc>`).
-    pub fn configure_ap(ssid: &str, password: &str, channel: u8, encryption: u8) -> Result<AtCommandString> {
+    pub fn configure_ap(
+        ssid: &str,
+        password: &str,
+        channel: u8,
+        encryption: u8,
+    ) -> Result<AtCommandString> {
         AtCommand::new("AT+CWSAP")
             .args()?
             .arg_quoted(ssid)?
@@ -435,10 +438,7 @@ pub mod wifi {
 
     /// Disconnect a station from the Soft-AP (`AT+CWQIF="<mac>"`).
     pub fn disconnect_station(mac: &str) -> Result<AtCommandString> {
-        AtCommand::new("AT+CWQIF")
-            .args()?
-            .arg_quoted(mac)?
-            .build()
+        AtCommand::new("AT+CWQIF").args()?.arg_quoted(mac)?.build()
     }
 
     /// Configure DHCP (`AT+CWDHCP=<mode>,<state>`).
@@ -456,7 +456,11 @@ pub mod wifi {
     }
 
     /// Configure the Soft-AP DHCP server (`AT+CWDHCPS=1,<lease>,"<ip>","<gw>"`).
-    pub fn set_ap_dhcp_server(lease_min: u32, ip: &Ipv4Address, gateway: &Ipv4Address) -> Result<AtCommandString> {
+    pub fn set_ap_dhcp_server(
+        lease_min: u32,
+        ip: &Ipv4Address,
+        gateway: &Ipv4Address,
+    ) -> Result<AtCommandString> {
         AtCommand::new("AT+CWDHCPS=1")
             .args()?
             .arg_int(lease_min)?
@@ -586,10 +590,7 @@ pub mod wifi {
 
     /// Set the wake DTIM factor (`AT+SLWKDTIM=<dtim>`).
     pub fn set_wake_dtim(dtim: u32) -> Result<AtCommandString> {
-        AtCommand::new("AT+SLWKDTIM")
-            .args()?
-            .arg_int(dtim)?
-            .build()
+        AtCommand::new("AT+SLWKDTIM").args()?.arg_int(dtim)?.build()
     }
 
     /// Query the AP DTIM (`AT+GET_AP_DTIM?`).
@@ -717,7 +718,12 @@ pub mod network {
     }
 
     /// Start a TCP server (`AT+CIPSERVER=1,<port>,"<ip>",<u16>,<u32>`).
-    pub fn start_server(port: u16, ip: &str, backlog: u16, timeout: u32) -> Result<AtCommandString> {
+    pub fn start_server(
+        port: u16,
+        ip: &str,
+        backlog: u16,
+        timeout: u32,
+    ) -> Result<AtCommandString> {
         AtCommand::new("AT+CIPSERVER=1")
             .args()?
             .arg_int(port)?
@@ -811,9 +817,7 @@ pub mod network {
         if !enable {
             return AtCommand::new("AT+CIPDNS=0").build();
         }
-        let mut cmd = AtCommand::new("AT+CIPDNS=1")
-            .args()?
-            .arg_quoted(dns1)?;
+        let mut cmd = AtCommand::new("AT+CIPDNS=1").args()?.arg_quoted(dns1)?;
         if let Some(dns2) = dns2 {
             cmd = cmd.arg_quoted(dns2)?;
         }
@@ -1091,10 +1095,7 @@ pub mod filesystem {
 
     /// List files (`AT+FS=0,5,"<dir>"`).
     pub fn fs_list(dir: &str) -> Result<AtCommandString> {
-        AtCommand::new("AT+FS=0,5")
-            .args()?
-            .arg_quoted(dir)?
-            .build()
+        AtCommand::new("AT+FS=0,5").args()?.arg_quoted(dir)?.build()
     }
 }
 
@@ -1112,7 +1113,10 @@ pub mod fwu {
 
     /// Announce the next chunk (`AT+OTASEND=<len>`), then send the bytes.
     pub fn send(length: u32) -> Result<AtCommandString> {
-        AtCommand::new("AT+OTASEND").args()?.arg_int(length)?.build()
+        AtCommand::new("AT+OTASEND")
+            .args()?
+            .arg_int(length)?
+            .build()
     }
 
     /// Finish the transfer and reboot (`AT+OTAFIN`).
@@ -1134,7 +1138,10 @@ mod tests {
 
     #[test]
     fn wifi_connect_includes_equals() {
-        assert_eq!(s(wifi::connect("myssid", "mypass")), "AT+CWJAP=\"myssid\",\"mypass\",\r\n");
+        assert_eq!(
+            s(wifi::connect("myssid", "mypass")),
+            "AT+CWJAP=\"myssid\",\"mypass\",\r\n"
+        );
     }
 
     #[test]
@@ -1167,7 +1174,10 @@ mod tests {
 
     #[test]
     fn filesystem_layout_matches_reference() {
-        assert_eq!(s(filesystem::fs_create("crt.pem")), "AT+FS=0,1,\"crt.pem\"\r\n");
+        assert_eq!(
+            s(filesystem::fs_create("crt.pem")),
+            "AT+FS=0,1,\"crt.pem\"\r\n"
+        );
         assert_eq!(
             s(filesystem::fs_write("crt.pem", 0, 1024)),
             "AT+FS=0,2,\"crt.pem\",0,1024\r\n"
@@ -1176,8 +1186,14 @@ mod tests {
             s(filesystem::fs_read("crt.pem", 16, 32)),
             "AT+FS=0,3,\"crt.pem\",16,32\r\n"
         );
-        assert_eq!(s(filesystem::fs_delete("crt.pem")), "AT+FS=0,0,\"crt.pem\"\r\n");
-        assert_eq!(s(filesystem::fs_size("crt.pem")), "AT+FS=0,4,\"crt.pem\"\r\n");
+        assert_eq!(
+            s(filesystem::fs_delete("crt.pem")),
+            "AT+FS=0,0,\"crt.pem\"\r\n"
+        );
+        assert_eq!(
+            s(filesystem::fs_size("crt.pem")),
+            "AT+FS=0,4,\"crt.pem\"\r\n"
+        );
     }
 
     #[test]
@@ -1241,7 +1257,10 @@ mod tests {
         assert_eq!(s(system::get_version()), "AT+GMR\r\n");
         assert_eq!(s(system::set_power_mode(1)), "AT+PWR=1\r\n");
         assert_eq!(s(system::set_wakeup_pin(5)), "AT+SLWKIO=5,0\r\n");
-        assert_eq!(s(system::get_efuse(4, 0x10)), "AT+EFUSE-R=4,\"0x010\",1\r\n");
+        assert_eq!(
+            s(system::get_efuse(4, 0x10)),
+            "AT+EFUSE-R=4,\"0x010\",1\r\n"
+        );
     }
 
     #[test]
@@ -1253,7 +1272,10 @@ mod tests {
 
     #[test]
     fn ping_includes_reference_parameters() {
-        assert_eq!(s(network::ping("1.1.1.1")), "AT+PING=\"1.1.1.1\",64,4,1000\r\n");
+        assert_eq!(
+            s(network::ping("1.1.1.1")),
+            "AT+PING=\"1.1.1.1\",64,4,1000\r\n"
+        );
     }
 
     #[test]

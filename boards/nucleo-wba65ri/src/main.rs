@@ -23,23 +23,23 @@
 //!
 //! Run: `cargo run --release` from this directory.
 
-use core::fmt::Write as _;
 use core::cell::Cell;
+use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use defmt::{error, info, unwrap, warn};
 use embassy_executor::Spawner;
+use embassy_net::dns::DnsQueryType;
+use embassy_net::tcp::{TcpListener, TcpSocket};
+use embassy_net::udp::UdpSocket;
+use embassy_net::wire::IpAddr;
+use embassy_net::{Stack, StackStorage, StaticPool};
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::rng::Rng;
 use embassy_stm32::spi::{Config as SpiConfig, Spi};
 use embassy_stm32::time::Hertz;
-use embassy_net::dns::DnsQueryType;
-use embassy_net::tcp::{TcpListener, TcpSocket};
-use embassy_net::udp::UdpSocket;
-use embassy_net::wire::IpAddr;
-use embassy_net::{Stack, StackStorage, StaticPool};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::signal::Signal;
@@ -73,7 +73,11 @@ const N_TX: usize = 4;
 
 /// Concrete bus/pin types — needed to name the runner task.
 type Spi2Bus = AsyncSpi<
-    embassy_stm32::spi::Spi<'static, embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>,
+    embassy_stm32::spi::Spi<
+        'static,
+        embassy_stm32::mode::Blocking,
+        embassy_stm32::spi::mode::Master,
+    >,
 >;
 type CsPin = Output<'static>;
 
@@ -170,11 +174,14 @@ async fn ntp_task(stack: Stack<'static>) {
         }
 
         let mut buf = [0u8; 48];
-        let reply = with_timeout(Duration::from_secs(5), sock.recv_from_with(|data, _meta| {
-            let n = data.len().min(buf.len());
-            buf[..n].copy_from_slice(&data[..n]);
-            n
-        }))
+        let reply = with_timeout(
+            Duration::from_secs(5),
+            sock.recv_from_with(|data, _meta| {
+                let n = data.len().min(buf.len());
+                buf[..n].copy_from_slice(&data[..n]);
+                n
+            }),
+        )
         .await;
 
         match reply {
@@ -417,7 +424,10 @@ async fn http_get_into(stack: Stack<'static>, idx: usize, text: &mut heapless::S
         }
         Ok::<(), ()>(())
     };
-    if with_timeout(Duration::from_secs(5), exchange).await.is_err() {
+    if with_timeout(Duration::from_secs(5), exchange)
+        .await
+        .is_err()
+    {
         sock.close();
         let _ = text.push_str("(timeout)");
         return;
@@ -465,7 +475,11 @@ async fn http_get_into(stack: Stack<'static>, idx: usize, text: &mut heapless::S
         }
     };
 
-    let body = if body.is_empty() { b"(empty reply)" as &[u8] } else { body };
+    let body = if body.is_empty() {
+        b"(empty reply)" as &[u8]
+    } else {
+        body
+    };
 
     // Flatten to one line and cap the length so the card stays tidy.
     let mut count = 0usize;
@@ -910,13 +924,7 @@ async fn main(spawner: Spawner) {
     // bus idle most of the time.
     let mut spi_cfg = SpiConfig::default();
     spi_cfg.frequency = Hertz(24_000_000);
-    let spi = AsyncSpi::new(Spi::new_blocking(
-        p.SPI2,
-        p.PB10,
-        p.PC3,
-        p.PA9,
-        spi_cfg,
-    ));
+    let spi = AsyncSpi::new(Spi::new_blocking(p.SPI2, p.PB10, p.PC3, p.PA9, spi_cfg));
 
     // RDY (D3 / PB13).
     let rdy = ExtiInput::new_async(p.PB13, p.EXTI13, Pull::None, Irqs);
@@ -965,11 +973,7 @@ async fn main(spawner: Spawner) {
     info!("net: stack seeded from hardware RNG");
 
     static STACK_STORAGE: StaticCell<StackStorage<'static>> = StaticCell::new();
-    let (stack, net_runner) = Stack::new(
-        STACK_STORAGE.init(StackStorage::new()),
-        &POOL,
-        seed,
-    );
+    let (stack, net_runner) = Stack::new(STACK_STORAGE.init(StackStorage::new()), &POOL, seed);
     spawner.spawn(unwrap!(net_task(net_runner)));
     info!("embassy-net stack running (interface attaches after MAC discovery)");
 
@@ -989,7 +993,10 @@ async fn main(spawner: Spawner) {
                 responsive = true;
                 break;
             }
-            Ok(_) => info!("  announced ready but did not answer (attempt {})", attempt + 1),
+            Ok(_) => info!(
+                "  announced ready but did not answer (attempt {})",
+                attempt + 1
+            ),
             Err(e) => info!("  probe failed (attempt {}): {:?}", attempt + 1, e),
         }
     }
@@ -1005,7 +1012,11 @@ async fn main(spawner: Spawner) {
     info!("step: asking the module which firmware it runs ...");
     match control.at("AT+CWNETMODE?").await {
         Ok(out) => {
-            info!("  +CWNETMODE ok={}, {} line(s)", out.is_ok(), out.lines.len());
+            info!(
+                "  +CWNETMODE ok={}, {} line(s)",
+                out.is_ok(),
+                out.lines.len()
+            );
             for line in out.lines.iter() {
                 info!("      |{}|", line.as_str());
             }
@@ -1040,10 +1051,7 @@ async fn main(spawner: Spawner) {
             // The DHCP server on this network advertises a resolver that does
             // not answer, so pin public resolvers ahead of it. Static servers
             // are placed at the front of the list by update_dns_servers.
-            stack.set_dns_servers(&[
-                IpAddr::v4(1, 1, 1, 1),
-                IpAddr::v4(9, 9, 9, 9),
-            ]);
+            stack.set_dns_servers(&[IpAddr::v4(1, 1, 1, 1), IpAddr::v4(9, 9, 9, 9)]);
             info!("step: interface attached with the module's MAC, DHCP started");
             spawner.spawn(unwrap!(web_task(stack, rng)));
             spawner.spawn(unwrap!(ntp_task(stack)));
@@ -1057,7 +1065,12 @@ async fn main(spawner: Spawner) {
 
     for i in 0..5 {
         match control.at("AT").await {
-            Ok(out) => info!("  AT[{}] -> ok={}, {} line(s)", i, out.is_ok(), out.lines.len()),
+            Ok(out) => info!(
+                "  AT[{}] -> ok={}, {} line(s)",
+                i,
+                out.is_ok(),
+                out.lines.len()
+            ),
             Err(e) => error!("  AT[{}] failed: {:?}", i, e),
         }
         Timer::after_millis(100).await;
@@ -1081,7 +1094,12 @@ async fn main(spawner: Spawner) {
     let _ = control.at("AT+CWAUTOCONN=1").await;
     let mut associated = false;
     for _ in 0..20 {
-        if control.at("AT+CWJAP?").await.map(|o| o.is_ok()).unwrap_or(false) {
+        if control
+            .at("AT+CWJAP?")
+            .await
+            .map(|o| o.is_ok())
+            .unwrap_or(false)
+        {
             associated = true;
             break;
         }

@@ -341,11 +341,8 @@ impl HttpClient {
         while embassy_time::Instant::now() < response_timeout
             && total_received < response_buffer.len()
         {
-            match embedded_io_async::Read::read(
-                &mut socket,
-                &mut response_buffer[total_received..],
-            )
-            .await
+            match embedded_io_async::Read::read(&mut socket, &mut response_buffer[total_received..])
+                .await
             {
                 Ok(n) if n > 0 => {
                     total_received += n;

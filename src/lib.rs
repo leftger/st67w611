@@ -293,9 +293,7 @@ where
     /// [`crate::at::AtTransport`]; this uses the T01 [`AtProcessor`]-based
     /// adapter. (On T02, pass [`crate::net::xarxa::Control`] to
     /// [`crate::ble::Ble::new`] instead.)
-    pub fn ble(
-        &self,
-    ) -> crate::ble::Ble<crate::at::transport::ProcessorTransport<'_, SPI, CS>> {
+    pub fn ble(&self) -> crate::ble::Ble<crate::at::transport::ProcessorTransport<'_, SPI, CS>> {
         crate::ble::Ble::new(crate::at::transport::ProcessorTransport::new(
             self.processor,
             self.spi,
@@ -307,9 +305,7 @@ where
     ///
     /// On T02, pass [`crate::net::xarxa::Control`] to
     /// [`crate::fwu::Fwu::new`] instead.
-    pub fn fwu(
-        &self,
-    ) -> crate::fwu::Fwu<crate::at::transport::ProcessorTransport<'_, SPI, CS>> {
+    pub fn fwu(&self) -> crate::fwu::Fwu<crate::at::transport::ProcessorTransport<'_, SPI, CS>> {
         crate::fwu::Fwu::new(crate::at::transport::ProcessorTransport::new(
             self.processor,
             self.spi,
@@ -392,14 +388,14 @@ pub use bus::SpiTransport;
 #[cfg(feature = "mission-t01")]
 pub use http::{HttpClient, HttpMethod, HttpRequest, HttpResponse};
 pub use mqtt::{Mqtt, MqttConfig, MqttMessage};
+pub use net::client::CertificateType;
 #[cfg(feature = "mission-t01")]
 pub use net::NetworkDevice;
 #[cfg(feature = "mission-t01")]
 pub use sync::TmMutex;
-pub use net::client::CertificateType;
 
 // T02-specific re-exports
 #[cfg(feature = "mission-t02")]
 pub use driver_t02::Driver;
 #[cfg(feature = "mission-t02")]
-pub use net::{Control, XarxaRunner, XarxaState, WifiDevice};
+pub use net::{Control, WifiDevice, XarxaRunner, XarxaState};

@@ -290,7 +290,8 @@ impl<'d> Control<'d> {
     pub async fn connect(&self, ssid: &str, password: &str) -> Result<()> {
         use core::fmt::Write as _;
         let mut cmd = heapless::String::<160>::new();
-        write!(cmd, "AT+CWJAP=\"{}\",\"{}\",", ssid, password).map_err(|_| Error::BufferTooSmall)?;
+        write!(cmd, "AT+CWJAP=\"{}\",\"{}\",", ssid, password)
+            .map_err(|_| Error::BufferTooSmall)?;
         // Associating takes seconds; give it its own budget rather than the
         // default command timeout.
         let out = self
@@ -397,16 +398,18 @@ pub fn new<'d, SPI, CS, const N_RX: usize, const N_TX: usize>(
     rdy_level: &'static AtomicBool,
     state: &'d mut State<N_RX, N_TX>,
     mac: [u8; 6],
-) -> (
-    WifiDevice<'d>,
-    Runner<'d, SPI, CS, N_RX, N_TX>,
-    Control<'d>,
-)
+) -> (WifiDevice<'d>, Runner<'d, SPI, CS, N_RX, N_TX>, Control<'d>)
 where
     SPI: SpiBus,
     CS: OutputPin,
 {
-    let State { ch, at_req, at_resp, ready_announced, scan_done } = state;
+    let State {
+        ch,
+        at_req,
+        at_resp,
+        ready_announced,
+        scan_done,
+    } = state;
     let (ch_runner, device) = ch::new(ch, HardwareAddress::Ethernet(mac), MTU);
     let state_runner = ch_runner.state_runner();
 

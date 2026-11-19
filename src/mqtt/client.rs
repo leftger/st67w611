@@ -131,13 +131,7 @@ impl<T: AtTransport> Mqtt<T> {
     }
 
     /// Connect to a broker (`AT+MQTTCONN`).
-    pub async fn connect(
-        &self,
-        link_id: u8,
-        host: &str,
-        port: u16,
-        reconnect: bool,
-    ) -> Result<()> {
+    pub async fn connect(&self, link_id: u8, host: &str, port: u16, reconnect: bool) -> Result<()> {
         self.transport
             .exec_ok(cmd::connect(link_id, host, port, reconnect))
             .await?;

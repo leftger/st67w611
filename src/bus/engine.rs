@@ -243,7 +243,9 @@ where
         {
             let header = Header::new(
                 if send_payload {
-                    tx.as_ref().map(|f| f.traffic_type).unwrap_or(TrafficType::AtCommand)
+                    tx.as_ref()
+                        .map(|f| f.traffic_type)
+                        .unwrap_or(TrafficType::AtCommand)
                 } else {
                     TrafficType::AtCommand
                 },
@@ -334,7 +336,12 @@ where
     }
 
     /// Steps 3–4 of the exchange, with CS already asserted.
-    async fn perform(&mut self, first_len: usize, out: &mut [u8], tx_deferred: bool) -> Result<Received> {
+    async fn perform(
+        &mut self,
+        first_len: usize,
+        out: &mut [u8],
+        tx_deferred: bool,
+    ) -> Result<Received> {
         {
             let tx = &self.tx_scratch[..first_len];
             let rx = &mut self.rx_scratch[..first_len];
