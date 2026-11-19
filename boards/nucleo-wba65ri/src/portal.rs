@@ -8,7 +8,9 @@
 //!   page load),
 //! * pick one, type the password, and join it,
 //! * have the module remember it (`CWJAP` already stores credentials, plus an
-//!   explicit auto-connect flag) so the board reconnects on the next power-up.
+//!   explicit auto-connect flag) so the board reconnects on the next power-up,
+//! * read the addresses the board currently has, both on Wi-Fi (the DHCP lease
+//!   of the host's embassy-net stack) and on this USB link.
 //!
 //! This link is independent of Wi-Fi, so it works at a new location where the
 //! stored network is absent — exactly the "take it somewhere else" case.
@@ -18,6 +20,7 @@ use core::fmt::Write as _;
 use defmt::{error, info, warn};
 use embassy_executor::Spawner;
 use embassy_net::iface::dhcpv4_server::DhcpServerConfig;
+use embassy_net::iface::Iface;
 use embassy_net::tcp::{TcpListener, TcpSocket};
 use embassy_net::wire::{IpAddr, IpCidr, Ipv4Addr};
 use embassy_net::{Stack, StackStorage, StaticPool};
@@ -71,6 +74,8 @@ select,input{width:100%;background:#0d1117;color:#e6edf3;border:1px solid var(--
 button{width:100%;margin-top:14px;background:#1f6feb;border:1px solid #388bfd;color:#fff;border-radius:7px;padding:10px;font-size:.9rem;cursor:pointer}
 button.alt{background:#21262d;border-color:var(--bd)}
 .msg{border-left:3px solid var(--ok);padding:8px 10px;background:#0f2916;border-radius:6px;font-size:.88rem}
+.ip{margin-top:8px;font-size:.9rem}
+.ip code{background:#0d1117;border:1px solid var(--bd);border-radius:5px;padding:1px 6px;color:var(--ok)}
 .f{color:#8b949e;font-size:.78rem}
 </style></head><body><div class="wrap">
 <h1>st67w611 &middot; Wi-Fi setup</h1>
@@ -80,7 +85,12 @@ button.alt{background:#21262d;border-color:var(--bd)}
 ///
 /// Scanning is done on demand (each load) because the module's scan takes a
 /// couple of seconds and the list is only useful when freshly taken.
-async fn render_page(control: &Control<'static>, message: Option<&str>) -> heapless::String<6144> {
+async fn render_page(
+    control: &Control<'static>,
+    wifi_iface: Iface<'static>,
+    usb_iface: Iface<'static>,
+    message: Option<&str>,
+) -> heapless::String<6144> {
     let mut out = heapless::String::<6144>::new();
     let _ = out.push_str(INDEX_HEAD);
 
@@ -92,8 +102,10 @@ async fn render_page(control: &Control<'static>, message: Option<&str>) -> heapl
 
     // Current association, if any.
     let mut status = heapless::String::<160>::new();
+    let mut associated = false;
     match control.at("AT+CWJAP?").await {
         Ok(o) if o.is_ok() => {
+            associated = true;
             if let Some(line) = o.lines.first() {
                 let _ = write!(status, "{}", line.as_str());
             }
@@ -103,9 +115,32 @@ async fn render_page(control: &Control<'static>, message: Option<&str>) -> heapl
         }
     }
 
+    // The Wi-Fi address lives in the host's embassy-net stack on T02: the
+    // module is only a MAC/PHY there, so `AT+CIPSTA?` would not have it. The
+    // USB address comes from this portal's own stack.
+    let wifi_ip = format_ip_addrs(wifi_iface);
+    let mut usb_ip = format_ip_addrs(usb_iface);
+    if usb_ip.is_empty() {
+        let _ = usb_ip.push_str("no address");
+    }
+
     let _ = out.push_str("<div class=\"card\"><div class=\"k\">current network</div><div>");
     push_escaped(&mut out, status.as_str());
-    let _ = out.push_str("</div></div>\n");
+    let _ = out.push_str("</div>\n");
+    // Show the wireless address only while the station is associated. DHCP
+    // may still be in flight right after joining, so say so explicitly.
+    if associated {
+        let _ = out.push_str("<div class=\"ip\">Wi-Fi IP: <code>");
+        if wifi_ip.is_empty() {
+            let _ = out.push_str("waiting for DHCP");
+        } else {
+            push_escaped(&mut out, wifi_ip.as_str());
+        }
+        let _ = out.push_str("</code></div>\n");
+    }
+    let _ = out.push_str("<div class=\"ip\">USB IP: <code>");
+    push_escaped(&mut out, usb_ip.as_str());
+    let _ = out.push_str("</code></div></div>\n");
 
     // Fresh scan.
     let scan = control.scan().await;
@@ -136,6 +171,28 @@ async fn render_page(control: &Control<'static>, message: Option<&str>) -> heapl
     let _ = out.push_str("<button type=\"submit\">Connect and remember</button>\n</form>\n");
     let _ = out.push_str("<form method=\"get\" action=\"/\"><button class=\"alt\" type=\"submit\">Rescan</button></form>\n");
     let _ = out.push_str("</div>\n<p class=\"f\">Served over USB at 192.168.7.1 &middot; credentials are stored in the module and re-used on boot.</p>\n</div></body></html>\n");
+    out
+}
+
+/// Format the IPv4 addresses assigned to an interface, comma-separated.
+///
+/// The prefix length is intentionally left off: the value is meant to be
+/// pasted into a browser's address bar, and the page labels which link each
+/// one belongs to. IPv6 is skipped because an Ethernet interface always gets
+/// an automatic (link-local) address, which is not useful here.
+fn format_ip_addrs(iface: Iface<'static>) -> heapless::String<160> {
+    let mut out = heapless::String::<160>::new();
+    for addr in iface.ip_addrs() {
+        if !addr.cidr.is_ipv4() {
+            continue;
+        }
+        if !out.is_empty() {
+            let _ = out.push_str(", ");
+        }
+        if write!(out, "{}", addr.cidr.address()).is_err() {
+            break;
+        }
+    }
     out
 }
 
@@ -255,7 +312,12 @@ fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
 
 /// The provisioning HTTP server, on the USB stack, port 80.
 #[embassy_executor::task]
-pub async fn portal_task(stack: Stack<'static>, control: &'static Control<'static>) -> ! {
+pub async fn portal_task(
+    stack: Stack<'static>,
+    control: &'static Control<'static>,
+    wifi_iface: Iface<'static>,
+    usb_iface: Iface<'static>,
+) -> ! {
     let mut rx = [0u8; 512];
     let mut tx = [0u8; 2048];
 
@@ -300,7 +362,7 @@ pub async fn portal_task(stack: Stack<'static>, control: &'static Control<'stati
         // join still shows the (fresh) network list with the error on top.
         let body: heapless::String<6144> = match page {
             Some(p) => p,
-            None => render_page(control, message.as_deref()).await,
+            None => render_page(control, wifi_iface, usb_iface, message.as_deref()).await,
         };
 
         const HEADER: &str = concat!(
@@ -397,6 +459,7 @@ pub fn spawn<B>(
     dm: embassy_stm32::Peri<'static, peripherals::PD7>,
     irq: B,
     control: &'static Control<'static>,
+    wifi_iface: Iface<'static>,
 ) where
     B: Binding<
             <peripherals::USB_OTG_HS as usb::Instance>::Interrupt,
@@ -467,5 +530,7 @@ pub fn spawn<B>(
     );
     defmt::unwrap!(iface.set_dhcpv4_server(Some(dhcp)));
 
-    spawner.spawn(defmt::unwrap!(portal_task(stack, control)));
+    spawner.spawn(defmt::unwrap!(portal_task(
+        stack, control, wifi_iface, iface
+    )));
 }
