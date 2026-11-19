@@ -82,6 +82,16 @@ pub const WIFI_JOIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// A scan takes several seconds, so `AT+CWLAP` gets its own budget too.
 pub const SCAN_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Largest block `AT+CIPRECVDATA` can hand back in one call.
+pub const RECV_MAX: usize = 1024;
+
+/// Socket events buffered between the runner and the application. Older events
+/// are kept and newer ones dropped when the application falls behind.
+pub const NET_EVENTS_MAX: usize = 8;
+
+/// How long to wait for the first `+PING:` result after `AT+PING` is acknowledged.
+pub const PING_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// The control side waits this much longer than the runner transaction budget,
 /// so the runner always gets to report its verdict first. If both sides expired
 /// together the caller would see a bare `Err(Timeout)` while the runner was
@@ -161,6 +171,16 @@ pub struct State<const N_RX: usize, const N_TX: usize> {
     /// Delivers a finished scan: the module streams `+CWLAP` lines outside the
     /// command transaction and ends them with `+CW:SCAN_DONE`.
     scan_done: Signal<CriticalSectionRawMutex, AtOutput>,
+    /// Delivers a ping result: the module acknowledges `AT+PING` at once and
+    /// reports each round trip later as an unsolicited `+PING:<ms>ms` line.
+    ping_done: Signal<CriticalSectionRawMutex, AtOutput>,
+    /// Socket events the module pushes on its own: `+CIP:<link>,CONNECTED` /
+    /// `DISCONNECTED` and the `+IPD:<link>,<len>...` data notice. A server needs
+    /// these to learn that a client has connected.
+    net_events: Channel<CriticalSectionRawMutex, LineBuffer, NET_EVENTS_MAX>,
+    /// The raw bytes of the last `AT+CIPRECVDATA`, which arrive length-prefixed
+    /// rather than as lines (see `RawState`).
+    recv_data: Signal<CriticalSectionRawMutex, heapless::Vec<u8, RECV_MAX>>,
 }
 
 impl<const N_RX: usize, const N_TX: usize> State<N_RX, N_TX> {
@@ -172,6 +192,9 @@ impl<const N_RX: usize, const N_TX: usize> State<N_RX, N_TX> {
             at_resp: Signal::new(),
             ready_announced: Signal::new(),
             scan_done: Signal::new(),
+            ping_done: Signal::new(),
+            net_events: Channel::new(),
+            recv_data: Signal::new(),
         }
     }
 }
@@ -182,12 +205,20 @@ impl<const N_RX: usize, const N_TX: usize> Default for State<N_RX, N_TX> {
     }
 }
 
+/// Is this line a socket event the module pushed on its own?
+fn is_net_event(line: &str) -> bool {
+    line.starts_with("+CIP:") || line.starts_with("+IPD:")
+}
+
 /// Wi-Fi control plane: send AT commands over the same SPI link as the data.
 pub struct Control<'d> {
     at_req: &'d Channel<CriticalSectionRawMutex, AtRequest, 1>,
     at_resp: &'d Signal<CriticalSectionRawMutex, AtOutput>,
     ready_announced: &'d Signal<CriticalSectionRawMutex, ()>,
     scan_done: &'d Signal<CriticalSectionRawMutex, AtOutput>,
+    ping_done: &'d Signal<CriticalSectionRawMutex, AtOutput>,
+    net_events: &'d Channel<CriticalSectionRawMutex, LineBuffer, NET_EVENTS_MAX>,
+    recv_data: &'d Signal<CriticalSectionRawMutex, heapless::Vec<u8, RECV_MAX>>,
     /// Lets the control plane report Wi-Fi link state to embassy-net.
     state: ch::StateRunner<'d>,
     timeout: Duration,
@@ -290,7 +321,8 @@ impl<'d> Control<'d> {
     pub async fn connect(&self, ssid: &str, password: &str) -> Result<()> {
         use core::fmt::Write as _;
         let mut cmd = heapless::String::<160>::new();
-        write!(cmd, "AT+CWJAP=\"{}\",\"{}\",", ssid, password).map_err(|_| Error::BufferTooSmall)?;
+        write!(cmd, "AT+CWJAP=\"{}\",\"{}\",", ssid, password)
+            .map_err(|_| Error::BufferTooSmall)?;
         // Associating takes seconds; give it its own budget rather than the
         // default command timeout.
         let out = self
@@ -301,6 +333,17 @@ impl<'d> Control<'d> {
         }
         self.state.set_link_state(LinkState::Up);
         Ok(())
+    }
+
+    /// Report the Wi-Fi link as up or down to embassy-net, without touching the
+    /// module.
+    ///
+    /// [`Self::connect`] does this itself. Call this when the module joined a
+    /// network on its own (stored credentials, `AT+CWAUTOCONN`), so the host
+    /// stack starts DHCP.
+    pub fn set_link(&self, up: bool) {
+        self.state
+            .set_link_state(if up { LinkState::Up } else { LinkState::Down });
     }
 
     /// Disconnect from the current access point (`AT+CWQAP`).
@@ -325,6 +368,55 @@ impl<'d> Control<'d> {
         // `+CW:SCAN_DONE`; that is where the useful data arrives.
         match with_timeout(SCAN_TIMEOUT, self.scan_done.wait()).await {
             Ok(scan) => Ok(scan),
+            Err(_) => Ok(out),
+        }
+    }
+
+    /// Pull up to `max` buffered bytes from `link` (`AT+CIPRECVDATA`, passive
+    /// receive mode). Returns the raw bytes, empty if nothing is waiting.
+    ///
+    /// The reply is captured by its length prefix rather than split into lines,
+    /// so it is binary-safe and not limited by [`AT_LINES_MAX`].
+    pub async fn recv(&self, link: u8, max: usize) -> Result<heapless::Vec<u8, RECV_MAX>> {
+        use core::fmt::Write as _;
+        let mut cmd = heapless::String::<48>::new();
+        write!(cmd, "AT+CIPRECVDATA={},{}", link, max.min(RECV_MAX))
+            .map_err(|_| Error::BufferTooSmall)?;
+        self.recv_data.reset();
+        let out = self.at(&cmd).await?;
+        if !out.is_ok() {
+            return Err(Error::AtCommandFailed);
+        }
+        Ok(self.recv_data.try_take().unwrap_or_default())
+    }
+
+    /// Wait up to `timeout` for the next socket event the module pushed.
+    ///
+    /// Events are whole lines such as `+CIP:0,CONNECTED`, `+CIP:0,DISCONNECTED`
+    /// and `+IPD:0,<len>,...` (data waiting on link 0 in passive receive mode).
+    /// They are captured whether or not an AT command is in flight.
+    pub async fn socket_event(&self, timeout: Duration) -> Option<LineBuffer> {
+        with_timeout(timeout, self.net_events.receive()).await.ok()
+    }
+
+    /// Ping a host (`AT+PING="<host>"`) and return the first reply.
+    ///
+    /// The module acknowledges the command at once and reports each round trip
+    /// afterwards as an unsolicited `+PING:<ms>ms` line, so the reply is in
+    /// [`AtOutput::lines`] of the result. If no reply arrives within
+    /// [`PING_TIMEOUT`], the plain acknowledgement is returned with no lines.
+    pub async fn ping(&self, host: &str) -> Result<AtOutput> {
+        use core::fmt::Write as _;
+        let mut cmd = heapless::String::<96>::new();
+        write!(cmd, "AT+PING=\"{}\"", host).map_err(|_| Error::BufferTooSmall)?;
+        // Drop a result left over from an earlier ping.
+        let _ = self.ping_done.try_take();
+        let out = self.at(&cmd).await?;
+        if !out.is_ok() {
+            return Ok(out);
+        }
+        match with_timeout(PING_TIMEOUT, self.ping_done.wait()).await {
+            Ok(reply) => Ok(reply),
             Err(_) => Ok(out),
         }
     }
@@ -368,6 +460,9 @@ pub struct Runner<'d, SPI, CS, const N_RX: usize, const N_TX: usize> {
     at_resp: &'d Signal<CriticalSectionRawMutex, AtOutput>,
     ready_announced: &'d Signal<CriticalSectionRawMutex, ()>,
     scan_done: &'d Signal<CriticalSectionRawMutex, AtOutput>,
+    ping_done: &'d Signal<CriticalSectionRawMutex, AtOutput>,
+    net_events: &'d Channel<CriticalSectionRawMutex, LineBuffer, NET_EVENTS_MAX>,
+    recv_data: &'d Signal<CriticalSectionRawMutex, heapless::Vec<u8, RECV_MAX>>,
     ready: &'static Signal<CriticalSectionRawMutex, ()>,
     rx: [u8; RX_SCRATCH],
     // AT transaction scratch.
@@ -377,7 +472,32 @@ pub struct Runner<'d, SPI, CS, const N_RX: usize, const N_TX: usize> {
     scan_buf: heapless::Vec<LineBuffer, AT_LINES_MAX>,
     at_status: Option<AtStatus>,
     at_prompt: bool,
+    /// The current transaction has already sent its payload.
+    at_payload_sent: bool,
     at_active: bool,
+    /// Where we are in a `+CIPRECVDATA:<len>,<bytes>` reply, if one is expected.
+    raw_state: RawState,
+    /// The bytes of that reply.
+    raw: heapless::Vec<u8, RECV_MAX>,
+}
+
+/// Progress through `+CIPRECVDATA:<len>,<len raw bytes>`.
+///
+/// The data is binary and may contain any bytes, including `\r\n`, which the line
+/// parser would split (and cap at `AT_LINES_MAX` lines). So it is *also* captured
+/// by length, as ST's driver does (`on_cmd_pulldata`), for `Control::recv`.
+#[derive(Clone, Copy, PartialEq)]
+enum RawState {
+    /// Not in a receive transaction.
+    Off,
+    /// Waiting for the `+CIPRECVDATA:` prefix.
+    Seek,
+    /// Reading the decimal length.
+    Len(usize),
+    /// Reading this many more raw bytes.
+    Data(usize),
+    /// All bytes read; the trailing `OK` is an ordinary line.
+    Done,
 }
 
 /// Create a driver, its background runner and the Wi-Fi control handle.
@@ -397,16 +517,21 @@ pub fn new<'d, SPI, CS, const N_RX: usize, const N_TX: usize>(
     rdy_level: &'static AtomicBool,
     state: &'d mut State<N_RX, N_TX>,
     mac: [u8; 6],
-) -> (
-    WifiDevice<'d>,
-    Runner<'d, SPI, CS, N_RX, N_TX>,
-    Control<'d>,
-)
+) -> (WifiDevice<'d>, Runner<'d, SPI, CS, N_RX, N_TX>, Control<'d>)
 where
     SPI: SpiBus,
     CS: OutputPin,
 {
-    let State { ch, at_req, at_resp, ready_announced, scan_done } = state;
+    let State {
+        ch,
+        at_req,
+        at_resp,
+        ready_announced,
+        scan_done,
+        ping_done,
+        net_events,
+        recv_data,
+    } = state;
     let (ch_runner, device) = ch::new(ch, HardwareAddress::Ethernet(mac), MTU);
     let state_runner = ch_runner.state_runner();
 
@@ -421,6 +546,9 @@ where
         at_resp,
         ready_announced,
         scan_done,
+        ping_done,
+        net_events,
+        recv_data,
         ready,
         rx: [0; RX_SCRATCH],
         at_buf: LineBuffer::new(),
@@ -428,13 +556,19 @@ where
         scan_buf: heapless::Vec::new(),
         at_status: None,
         at_prompt: false,
+        at_payload_sent: false,
         at_active: false,
+        raw_state: RawState::Off,
+        raw: heapless::Vec::new(),
     };
     let control = Control {
         at_req,
         at_resp,
         ready_announced,
         scan_done,
+        ping_done,
+        net_events,
+        recv_data,
         state: state_runner,
         timeout: AT_TIMEOUT,
     };
@@ -490,6 +624,7 @@ where
         // as AtCommand: if they are not, they are handed to the network stack
         // while the AT parser waits forever — which matches the symptom exactly
         // (the boot banner is parsed, command replies never are).
+        #[cfg(feature = "defmt")]
         let shown = recv.len.min(64);
         #[cfg(feature = "defmt")]
         defmt::trace!(
@@ -541,6 +676,33 @@ where
         // out-of-transaction lines meant we could never see that announcement.
         for i in 0..len {
             let b = self.rx[i];
+
+            // Inside a `+CIPRECVDATA` reply, also capture the bytes by length for
+            // `Control::recv`. This is *additive*: every byte still goes through
+            // the line parser below, so line-based callers (`Net::receive` over
+            // this transport, for one) see the same lines as before.
+            match self.raw_state {
+                RawState::Len(n) => {
+                    self.raw_state = match b {
+                        b'0'..=b'9' => RawState::Len(n * 10 + (b - b'0') as usize),
+                        b',' if n > 0 => RawState::Data(n),
+                        _ => RawState::Done,
+                    };
+                }
+                RawState::Data(left) => {
+                    let _ = self.raw.push(b);
+                    self.raw_state = if left <= 1 {
+                        RawState::Done
+                    } else {
+                        RawState::Data(left - 1)
+                    };
+                }
+                RawState::Seek if b == b':' && self.at_buf.as_str() == "+CIPRECVDATA" => {
+                    self.raw_state = RawState::Len(0);
+                }
+                _ => {}
+            }
+
             if b == b'\n' {
                 if self.at_active {
                     self.finish_at_line();
@@ -550,6 +712,14 @@ where
             } else if b != b'\r' {
                 let _ = self.at_buf.push(b as char);
             }
+        }
+        // The module ends some prompts with no newline at all: `AT+CIPSEND` is
+        // answered with `\r\nOK\r\n\r\n>` and then silence until the payload
+        // arrives, so a line-based parser would never see the prompt. ST's driver
+        // matches `>` directly for the same reason.
+        if self.at_active && self.at_buf.as_str() == ">" {
+            self.at_prompt = true;
+            self.at_buf.clear();
         }
     }
 
@@ -564,6 +734,15 @@ where
                 self.ready_announced.signal(());
             } else if self.at_buf.starts_with("+CWLAP:") {
                 let _ = self.scan_buf.push(self.at_buf.clone());
+            } else if is_net_event(&self.at_buf) {
+                let _ = self.net_events.try_send(self.at_buf.clone());
+            } else if self.at_buf.starts_with("+PING:") {
+                let mut lines = heapless::Vec::new();
+                let _ = lines.push(self.at_buf.clone());
+                self.ping_done.signal(AtOutput {
+                    status: AtStatus::Ok,
+                    lines,
+                });
             } else if self.at_buf.starts_with("+CW:SCAN_DONE") {
                 let lines = core::mem::take(&mut self.scan_buf);
                 self.scan_done.signal(AtOutput {
@@ -583,9 +762,24 @@ where
         // Bring-up tracing: what the module actually said, line by line.
         #[cfg(feature = "defmt")]
         defmt::trace!("at line: |{}|", self.at_buf.as_str());
+        // Socket events can land in the middle of any command's reply; they
+        // belong to the application, not to that command.
+        if is_net_event(&self.at_buf) {
+            let _ = self.net_events.try_send(self.at_buf.clone());
+            self.at_buf.clear();
+            return;
+        }
+        // After a payload, the module confirms receipt with `Recv <n> bytes`
+        // (ST's driver waits on exactly that line, not on a second `OK`).
+        if self.at_payload_sent && self.at_buf.starts_with("Recv ") {
+            self.at_status = Some(AtStatus::Ok);
+            self.at_buf.clear();
+            return;
+        }
         if let Ok(Some(resp)) = parser::parse_line(&self.at_buf) {
             match resp {
                 AtResponse::Ok => self.at_status = Some(AtStatus::Ok),
+                AtResponse::SendOk if self.at_payload_sent => self.at_status = Some(AtStatus::Ok),
                 AtResponse::Error => self.at_status = Some(AtStatus::Error),
                 AtResponse::ReadyPrompt => self.at_prompt = true,
                 _ => {
@@ -614,6 +808,12 @@ where
         self.at_prompt = false;
         self.at_buf.clear();
         self.at_active = true;
+        self.raw.clear();
+        self.raw_state = if command.starts_with(b"AT+CIPRECVDATA=") {
+            RawState::Seek
+        } else {
+            RawState::Off
+        };
 
         // NOTE: there is deliberately no "drain stale frames" step here. An
         // earlier version flushed the queue with receive-only exchanges, i.e. it
@@ -645,16 +845,35 @@ where
             }
             // Previously swallowed: if the command frame never got out, the
             // module cannot answer and the transaction just times out silently.
-            Err(e) => {
+            Err(_e) => {
                 #[cfg(feature = "defmt")]
-                defmt::trace!("at send ERR: {:?}", e);
+                defmt::trace!("at send ERR: {:?}", _e);
             }
         }
 
         let deadline = Instant::now() + timeout;
-        while self.at_status.is_none() {
+        loop {
+            let payload_pending = !payload.is_empty();
+            // A terminal status ends the transaction, with one exception: the
+            // module answers a payload command with `OK` and *then* `>`, often
+            // in the same frame (`\r\nOK\r\n\r\n>\r\n` for `AT+OTASEND`). That
+            // `OK` only acknowledges the command; the payload is still owed.
+            // Stopping on it dropped the payload, left the module waiting for
+            // data, and made it swallow the next command as that data.
+            match self.at_status {
+                Some(AtStatus::Error) => break,
+                Some(_) if !payload_pending => break,
+                _ => {}
+            }
+
             // A pending payload goes out as soon as the module prompts.
-            if self.at_prompt && !payload.is_empty() {
+            if self.at_prompt && payload_pending {
+                // Forget the command's acknowledgement: what ends the
+                // transaction now is the module's reply to the payload. Clearing
+                // it *before* sending keeps a reply that arrives with the payload
+                // exchange (BLE's prompt -> payload -> `OK` order) intact.
+                self.at_status = None;
+                self.at_payload_sent = true;
                 if let Ok(recv) = self
                     .engine
                     .exchange(Some(Outbound::at(&payload)), &mut self.rx)
@@ -697,10 +916,21 @@ where
         );
 
         self.at_active = false;
+        self.at_payload_sent = false;
+        if self.raw_state != RawState::Off {
+            // Publish before the response so `Control::recv` finds it waiting.
+            self.recv_data.signal(core::mem::take(&mut self.raw));
+            self.raw_state = RawState::Off;
+        }
         let lines = core::mem::take(&mut self.at_lines);
-        self.at_resp.signal(AtOutput {
-            status: self.at_status.take().unwrap_or(AtStatus::Timeout),
-            lines,
-        });
+        // A payload that was never sent (no `>` prompt) is a failure even if
+        // the command itself was acknowledged with `OK`.
+        let status = if payload.is_empty() {
+            self.at_status.take().unwrap_or(AtStatus::Timeout)
+        } else {
+            self.at_status = None;
+            AtStatus::Timeout
+        };
+        self.at_resp.signal(AtOutput { status, lines });
     }
 }

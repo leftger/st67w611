@@ -2,7 +2,7 @@
 //!
 //! This wraps the [`crate::at::ble`] command builders in an ergonomic API and
 //! is generic over [`AtTransport`], so the same code runs on T01
-//! (`AtProcessor`) and T02 ([`crate::net::xarxa::Control`]).
+//! (`AtProcessor`) and T02 (`crate::net::xarxa::Control`).
 //!
 //! ```no_run
 //! use st67w611::ble::Ble;
@@ -20,8 +20,8 @@
 //!
 //! Operations whose payload follows the AT line (GATT notify/indicate/write)
 //! need a transport that implements
-//! [`AtTransport::at_with_payload`](crate::at::AtTransport::at_with_payload);
-//! otherwise they return [`Error::NotSupported`](crate::Error::NotSupported).
+//! [`AtTransport::at_with_payload`];
+//! otherwise they return [`Error::NotSupported`].
 
 use crate::at::ble as cmd;
 use crate::at::command::{wire_str, AtCommandString};
@@ -78,7 +78,10 @@ impl<T: AtTransport> Ble<T> {
 
     async fn exec_payload(&self, command: Result<AtCommandString>, payload: &[u8]) -> Result<()> {
         let command = command?;
-        let out = self.transport.at_with_payload(wire_str(&command), payload).await?;
+        let out = self
+            .transport
+            .at_with_payload(wire_str(&command), payload)
+            .await?;
         if out.status == AtStatus::Ok {
             Ok(())
         } else {
@@ -138,8 +141,13 @@ impl<T: AtTransport> Ble<T> {
         adv_type: u16,
         channel: u16,
     ) -> Result<()> {
-        self.exec_ok(cmd::set_adv_param(interval_min, interval_max, adv_type, channel))
-            .await
+        self.exec_ok(cmd::set_adv_param(
+            interval_min,
+            interval_max,
+            adv_type,
+            channel,
+        ))
+        .await
     }
 
     /// Set advertising data (hex string).
@@ -207,7 +215,12 @@ impl<T: AtTransport> Ble<T> {
     }
 
     /// Set the connection data length.
-    pub async fn set_data_length(&self, conn_handle: u32, tx_bytes: u32, tx_time: u32) -> Result<()> {
+    pub async fn set_data_length(
+        &self,
+        conn_handle: u32,
+        tx_bytes: u32,
+        tx_time: u32,
+    ) -> Result<()> {
         self.exec_ok(cmd::set_data_length(conn_handle, tx_bytes, tx_time))
             .await
     }
@@ -257,7 +270,12 @@ impl<T: AtTransport> Ble<T> {
     }
 
     /// Notify a characteristic (payload follows the command).
-    pub async fn gatts_notify(&self, service_index: u16, char_index: u16, data: &[u8]) -> Result<()> {
+    pub async fn gatts_notify(
+        &self,
+        service_index: u16,
+        char_index: u16,
+        data: &[u8],
+    ) -> Result<()> {
         self.exec_payload(
             cmd::gatts_notify(service_index, char_index, data.len() as u32),
             data,
@@ -266,7 +284,12 @@ impl<T: AtTransport> Ble<T> {
     }
 
     /// Indicate a characteristic (payload follows the command).
-    pub async fn gatts_indicate(&self, service_index: u16, char_index: u16, data: &[u8]) -> Result<()> {
+    pub async fn gatts_indicate(
+        &self,
+        service_index: u16,
+        char_index: u16,
+        data: &[u8],
+    ) -> Result<()> {
         self.exec_payload(
             cmd::gatts_indicate(service_index, char_index, data.len() as u32),
             data,
@@ -296,7 +319,11 @@ impl<T: AtTransport> Ble<T> {
     }
 
     /// Discover a service's characteristics.
-    pub async fn gattc_discover_chars(&self, conn_handle: u16, service_index: u16) -> Result<AtOutput> {
+    pub async fn gattc_discover_chars(
+        &self,
+        conn_handle: u16,
+        service_index: u16,
+    ) -> Result<AtOutput> {
         self.exec(cmd::gattc_discover_chars(conn_handle, service_index))
             .await
     }
@@ -364,17 +391,20 @@ impl<T: AtTransport> Ble<T> {
 
     /// Enter the peer passkey.
     pub async fn security_passkey(&self, conn_handle: u16, passkey: u32) -> Result<()> {
-        self.exec_ok(cmd::security_passkey(conn_handle, passkey)).await
+        self.exec_ok(cmd::security_passkey(conn_handle, passkey))
+            .await
     }
 
     /// Confirm a passkey.
     pub async fn security_passkey_confirm(&self, conn_handle: u16) -> Result<()> {
-        self.exec_ok(cmd::security_passkey_confirm(conn_handle)).await
+        self.exec_ok(cmd::security_passkey_confirm(conn_handle))
+            .await
     }
 
     /// Confirm pairing.
     pub async fn security_pairing_confirm(&self, conn_handle: u16) -> Result<()> {
-        self.exec_ok(cmd::security_pairing_confirm(conn_handle)).await
+        self.exec_ok(cmd::security_pairing_confirm(conn_handle))
+            .await
     }
 
     /// Remove a bond.
@@ -491,7 +521,10 @@ mod tests {
     #[test]
     fn notify_requires_payload_support() {
         let ble = Ble::new(Mock::default());
-        assert_eq!(block_on(ble.gatts_notify(0, 0, &[1, 2, 3])), Err(Error::NotSupported));
+        assert_eq!(
+            block_on(ble.gatts_notify(0, 0, &[1, 2, 3])),
+            Err(Error::NotSupported)
+        );
     }
 
     #[test]
@@ -501,7 +534,10 @@ mod tests {
             ..Default::default()
         });
         block_on(ble.gatts_notify(0, 1, &[0xAA, 0xBB])).unwrap();
-        assert_eq!(ble.transport().last.borrow().as_str(), "AT+BLEGATTSNTFY=0,1,2,");
+        assert_eq!(
+            ble.transport().last.borrow().as_str(),
+            "AT+BLEGATTSNTFY=0,1,2,"
+        );
         assert_eq!(ble.transport().last_payload.get(), 2);
     }
 

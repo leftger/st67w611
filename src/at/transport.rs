@@ -5,7 +5,7 @@
 //!
 //! * T01: [`ProcessorTransport`], an adapter over
 //!   [`crate::at::processor::AtProcessor`] and the SPI bus.
-//! * T02: [`crate::net::xarxa::Control`], which shares the SPI link with the
+//! * T02: `crate::net::xarxa::Control`, which shares the SPI link with the
 //!   raw-L2 data path.
 
 use embassy_futures::select::{select, Either};
@@ -46,7 +46,7 @@ pub trait AtTransport {
 /// A shared transport is itself a transport.
 ///
 /// This lets a driver hand out clients that **borrow** its transport, which is
-/// what T02 needs: [`crate::net::xarxa::Control`] is stateful and cannot be
+/// what T02 needs: `crate::net::xarxa::Control` is stateful and cannot be
 /// duplicated, so `&Control` is the transport.
 impl<T: AtTransport + ?Sized> AtTransport for &T {
     async fn at(&self, command: &str) -> Result<AtOutput> {
@@ -104,9 +104,7 @@ impl<T: AtTransport + ?Sized> AtTransportExt for T {}
 /// Complete an AT command with CRLF.
 fn command_bytes(command: &str) -> Result<AtCommandString> {
     let mut bytes = AtCommandString::new();
-    bytes
-        .push_str(command)
-        .map_err(|_| Error::BufferTooSmall)?;
+    bytes.push_str(command).map_err(|_| Error::BufferTooSmall)?;
     bytes.push_str("\r\n").map_err(|_| Error::BufferTooSmall)?;
     Ok(bytes)
 }

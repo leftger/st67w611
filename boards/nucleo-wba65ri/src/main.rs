@@ -23,23 +23,23 @@
 //!
 //! Run: `cargo run --release` from this directory.
 
-use core::fmt::Write as _;
 use core::cell::Cell;
+use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use defmt::{error, info, unwrap, warn};
 use embassy_executor::Spawner;
+use embassy_net::dns::DnsQueryType;
+use embassy_net::tcp::{TcpListener, TcpSocket};
+use embassy_net::udp::UdpSocket;
+use embassy_net::wire::IpAddr;
+use embassy_net::{Stack, StackStorage, StaticPool};
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::rng::Rng;
 use embassy_stm32::spi::{Config as SpiConfig, Spi};
 use embassy_stm32::time::Hertz;
-use embassy_net::dns::DnsQueryType;
-use embassy_net::tcp::{TcpListener, TcpSocket};
-use embassy_net::udp::UdpSocket;
-use embassy_net::wire::IpAddr;
-use embassy_net::{Stack, StackStorage, StaticPool};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::signal::Signal;
@@ -51,7 +51,6 @@ use {defmt_rtt as _, panic_probe as _};
 use st67w611::net::xarxa::{self, Control, HardwareAddress, State as XarxaState, WifiDevice};
 
 mod portal;
-mod secrets;
 
 // RDY is on PB13 -> EXTI13; the hardware RNG feeds the stack seed and the
 // live telemetry stream; USB_OTG_HS carries the provisioning portal.
@@ -73,7 +72,11 @@ const N_TX: usize = 4;
 
 /// Concrete bus/pin types — needed to name the runner task.
 type Spi2Bus = AsyncSpi<
-    embassy_stm32::spi::Spi<'static, embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>,
+    embassy_stm32::spi::Spi<
+        'static,
+        embassy_stm32::mode::Blocking,
+        embassy_stm32::spi::mode::Master,
+    >,
 >;
 type CsPin = Output<'static>;
 
@@ -170,11 +173,14 @@ async fn ntp_task(stack: Stack<'static>) {
         }
 
         let mut buf = [0u8; 48];
-        let reply = with_timeout(Duration::from_secs(5), sock.recv_from_with(|data, _meta| {
-            let n = data.len().min(buf.len());
-            buf[..n].copy_from_slice(&data[..n]);
-            n
-        }))
+        let reply = with_timeout(
+            Duration::from_secs(5),
+            sock.recv_from_with(|data, _meta| {
+                let n = data.len().min(buf.len());
+                buf[..n].copy_from_slice(&data[..n]);
+                n
+            }),
+        )
         .await;
 
         match reply {
@@ -252,11 +258,9 @@ fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Case-insensitive search for an ASCII word.
 fn contains_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| {
-        w.iter()
-            .zip(needle)
-            .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
-    })
+    haystack
+        .windows(needle.len())
+        .any(|w| w.iter().zip(needle).all(|(a, b)| a.eq_ignore_ascii_case(b)))
 }
 
 /// Decode an HTTP/1.1 chunked body into `out`, returning the bytes written.
@@ -417,7 +421,10 @@ async fn http_get_into(stack: Stack<'static>, idx: usize, text: &mut heapless::S
         }
         Ok::<(), ()>(())
     };
-    if with_timeout(Duration::from_secs(5), exchange).await.is_err() {
+    if with_timeout(Duration::from_secs(5), exchange)
+        .await
+        .is_err()
+    {
         sock.close();
         let _ = text.push_str("(timeout)");
         return;
@@ -465,7 +472,11 @@ async fn http_get_into(stack: Stack<'static>, idx: usize, text: &mut heapless::S
         }
     };
 
-    let body = if body.is_empty() { b"(empty reply)" as &[u8] } else { body };
+    let body = if body.is_empty() {
+        b"(empty reply)" as &[u8]
+    } else {
+        body
+    };
 
     // Flatten to one line and cap the length so the card stays tidy.
     let mut count = 0usize;
@@ -910,13 +921,7 @@ async fn main(spawner: Spawner) {
     // bus idle most of the time.
     let mut spi_cfg = SpiConfig::default();
     spi_cfg.frequency = Hertz(24_000_000);
-    let spi = AsyncSpi::new(Spi::new_blocking(
-        p.SPI2,
-        p.PB10,
-        p.PC3,
-        p.PA9,
-        spi_cfg,
-    ));
+    let spi = AsyncSpi::new(Spi::new_blocking(p.SPI2, p.PB10, p.PC3, p.PA9, spi_cfg));
 
     // RDY (D3 / PB13).
     let rdy = ExtiInput::new_async(p.PB13, p.EXTI13, Pull::None, Irqs);
@@ -965,11 +970,7 @@ async fn main(spawner: Spawner) {
     info!("net: stack seeded from hardware RNG");
 
     static STACK_STORAGE: StaticCell<StackStorage<'static>> = StaticCell::new();
-    let (stack, net_runner) = Stack::new(
-        STACK_STORAGE.init(StackStorage::new()),
-        &POOL,
-        seed,
-    );
+    let (stack, net_runner) = Stack::new(STACK_STORAGE.init(StackStorage::new()), &POOL, seed);
     spawner.spawn(unwrap!(net_task(net_runner)));
     info!("embassy-net stack running (interface attaches after MAC discovery)");
 
@@ -989,7 +990,10 @@ async fn main(spawner: Spawner) {
                 responsive = true;
                 break;
             }
-            Ok(_) => info!("  announced ready but did not answer (attempt {})", attempt + 1),
+            Ok(_) => info!(
+                "  announced ready but did not answer (attempt {})",
+                attempt + 1
+            ),
             Err(e) => info!("  probe failed (attempt {}): {:?}", attempt + 1, e),
         }
     }
@@ -1005,7 +1009,11 @@ async fn main(spawner: Spawner) {
     info!("step: asking the module which firmware it runs ...");
     match control.at("AT+CWNETMODE?").await {
         Ok(out) => {
-            info!("  +CWNETMODE ok={}, {} line(s)", out.is_ok(), out.lines.len());
+            info!(
+                "  +CWNETMODE ok={}, {} line(s)",
+                out.is_ok(),
+                out.lines.len()
+            );
             for line in out.lines.iter() {
                 info!("      |{}|", line.as_str());
             }
@@ -1040,10 +1048,7 @@ async fn main(spawner: Spawner) {
             // The DHCP server on this network advertises a resolver that does
             // not answer, so pin public resolvers ahead of it. Static servers
             // are placed at the front of the list by update_dns_servers.
-            stack.set_dns_servers(&[
-                IpAddr::v4(1, 1, 1, 1),
-                IpAddr::v4(9, 9, 9, 9),
-            ]);
+            stack.set_dns_servers(&[IpAddr::v4(1, 1, 1, 1), IpAddr::v4(9, 9, 9, 9)]);
             info!("step: interface attached with the module's MAC, DHCP started");
             spawner.spawn(unwrap!(web_task(stack, rng)));
             spawner.spawn(unwrap!(ntp_task(stack)));
@@ -1059,7 +1064,12 @@ async fn main(spawner: Spawner) {
 
     for i in 0..5 {
         match control.at("AT").await {
-            Ok(out) => info!("  AT[{}] -> ok={}, {} line(s)", i, out.is_ok(), out.lines.len()),
+            Ok(out) => info!(
+                "  AT[{}] -> ok={}, {} line(s)",
+                i,
+                out.is_ok(),
+                out.lines.len()
+            ),
             Err(e) => error!("  AT[{}] failed: {:?}", i, e),
         }
         Timer::after_millis(100).await;
@@ -1078,12 +1088,18 @@ async fn main(spawner: Spawner) {
 
     // Prefer whatever the module already has stored: after provisioning over
     // the USB portal, `CWJAP` + auto-connect make it re-join by itself, which
-    // is what lets this board travel between networks. The compile-time
-    // credentials remain as a fallback for a freshly flashed board.
+    // is what lets this board travel between networks. Build-time credentials
+    // (`WIFI_SSID` / `WIFI_PASS` in the build environment) remain as a fallback
+    // for a freshly flashed board; they are never stored in the repo.
     let _ = control.at("AT+CWAUTOCONN=1").await;
     let mut associated = false;
     for _ in 0..20 {
-        if control.at("AT+CWJAP?").await.map(|o| o.is_ok()).unwrap_or(false) {
+        if control
+            .at("AT+CWJAP?")
+            .await
+            .map(|o| o.is_ok())
+            .unwrap_or(false)
+        {
             associated = true;
             break;
         }
@@ -1092,18 +1108,23 @@ async fn main(spawner: Spawner) {
 
     if associated {
         info!("step: module joined a stored network by itself");
-    } else {
-        info!("step: joining the built-in Wi-Fi credentials ...");
-        match control.connect(secrets::WIFI_SSID, secrets::WIFI_PASSWORD).await {
+    } else if let Some(ssid) = option_env!("WIFI_SSID").filter(|s| !s.is_empty()) {
+        info!("step: joining the build-time Wi-Fi credentials ...");
+        match control
+            .connect(ssid, option_env!("WIFI_PASS").unwrap_or(""))
+            .await
+        {
             Ok(()) => {
                 let _ = control.at("AT+CWAUTOCONN=1").await;
                 info!("step: Wi-Fi joined");
             }
             Err(e) => warn!(
-                "no stored network and the built-in join failed ({:?}); provision one over USB at http://192.168.7.1/",
+                "no stored network and the build-time join failed ({:?}); provision one over USB at http://192.168.7.1/",
                 e
             ),
         }
+    } else {
+        warn!("no stored network and no WIFI_SSID at build time; provision one over USB at http://192.168.7.1/");
     }
 
     loop {

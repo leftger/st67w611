@@ -275,7 +275,11 @@ pub fn set_data_length(conn_handle: u32, tx_bytes: u32, tx_time: u32) -> Result<
 }
 
 /// Create a GATT service (`AT+BLEGATTSSRVCRE=<idx>,"<uuid>",1,<uuid_type>`).
-pub fn gatts_create_service(service_index: u16, uuid: &str, uuid_type: u16) -> Result<AtCommandString> {
+pub fn gatts_create_service(
+    service_index: u16,
+    uuid: &str,
+    uuid_type: u16,
+) -> Result<AtCommandString> {
     AtCommand::new("AT+BLEGATTSSRVCRE")
         .args()?
         .arg_int(service_index)?
@@ -352,7 +356,11 @@ pub fn gatts_indicate(service_index: u16, char_index: u16, len: u32) -> Result<A
 }
 
 /// Provide data for a client read (`AT+BLEGATTSRD=<svc>,<char>,<len>` then data).
-pub fn gatts_set_read_data(service_index: u16, char_index: u16, len: u32) -> Result<AtCommandString> {
+pub fn gatts_set_read_data(
+    service_index: u16,
+    char_index: u16,
+    len: u32,
+) -> Result<AtCommandString> {
     AtCommand::new("AT+BLEGATTSRD")
         .args()?
         .arg_int(service_index)?
@@ -396,7 +404,11 @@ pub fn gattc_write(
 }
 
 /// Read a peer characteristic (`AT+BLEGATTCRD=<conn>,<svc>,<char>`).
-pub fn gattc_read(conn_handle: u16, service_index: u16, char_index: u16) -> Result<AtCommandString> {
+pub fn gattc_read(
+    conn_handle: u16,
+    service_index: u16,
+    char_index: u16,
+) -> Result<AtCommandString> {
     AtCommand::new("AT+BLEGATTCRD")
         .args()?
         .arg_int(conn_handle)?
@@ -581,12 +593,18 @@ mod tests {
             s(gattc_subscribe(0, 1, 2, char_prop::NOTIFY)),
             "AT+BLEGATTCSUBSCRIBE=0,1,2,16\r\n"
         );
-        assert_eq!(s(security_passkey(0, 123456)), "AT+BLESECPASSKEY=0,123456\r\n");
+        assert_eq!(
+            s(security_passkey(0, 123456)),
+            "AT+BLESECPASSKEY=0,123456\r\n"
+        );
         assert_eq!(s(security_start(0)), "AT+BLESECSTART=0\r\n");
     }
 
     #[test]
     fn appearance_is_zero_padded() {
-        assert_eq!(s(set_gap_appearance(64)), "AT+BLESETGAPAPPEARANCE=00064\r\n");
+        assert_eq!(
+            s(set_gap_appearance(64)),
+            "AT+BLESETGAPAPPEARANCE=00064\r\n"
+        );
     }
 }

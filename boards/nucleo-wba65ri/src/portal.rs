@@ -31,8 +31,8 @@ use embassy_usb::class::cdc_ncm::device::embassy_net::{Device, Runner, State as 
 use embassy_usb::class::cdc_ncm::device::{CdcNcmClass, Config as NcmConfig, State as NcmState};
 use embassy_usb::{Builder as UsbBuilder, UsbDevice, UsbDeviceSpeed};
 use embedded_io_async::Write;
-use static_cell::StaticCell;
 use st67w611::net::xarxa::Control;
+use static_cell::StaticCell;
 
 /// USB peripheral driver, named so the task signatures stay readable.
 pub type UsbDriver = Driver<'static, peripherals::USB_OTG_HS>;
@@ -160,7 +160,8 @@ async fn render_page(
     let _ = out.push_str("<div class=\"card\"><div class=\"k\">available networks");
     let _ = write!(out, " ({})", seen);
     let _ = out.push_str("</div>\n<form method=\"get\" action=\"/connect\">\n");
-    let _ = out.push_str("<label for=\"ssid\">network</label>\n<select id=\"ssid\" name=\"ssid\">\n");
+    let _ =
+        out.push_str("<label for=\"ssid\">network</label>\n<select id=\"ssid\" name=\"ssid\">\n");
     if seen == 0 {
         let _ = out.push_str("<option value=\"\">(no networks found - press rescan)</option>\n");
     }
@@ -198,7 +199,9 @@ fn format_ip_addrs(iface: Iface<'static>) -> heapless::String<160> {
 /// Append one `<option>` for a `+CWLAP` line; returns `false` if the line did
 /// not look like a scan result (or the SSID was already listed).
 fn add_option(out: &mut heapless::String<4096>, line: &str) -> bool {
-    let Some(lp) = line.find('(') else { return false };
+    let Some(lp) = line.find('(') else {
+        return false;
+    };
     let inner = &line[lp + 1..];
 
     // Security code is the first field, before the SSID.
@@ -218,9 +221,13 @@ fn add_option(out: &mut heapless::String<4096>, line: &str) -> bool {
     };
 
     // SSID is the first quoted string.
-    let Some(q1) = inner.find('"') else { return false };
+    let Some(q1) = inner.find('"') else {
+        return false;
+    };
     let rest = &inner[q1 + 1..];
-    let Some(q2) = rest.find('"') else { return false };
+    let Some(q2) = rest.find('"') else {
+        return false;
+    };
     let ssid = &rest[..q2];
     if ssid.is_empty() {
         return false;
@@ -228,7 +235,11 @@ fn add_option(out: &mut heapless::String<4096>, line: &str) -> bool {
 
     // RSSI is the field right after the closing quote.
     let after = &rest[q2 + 1..];
-    let rssi = after.trim_start_matches(',').split(',').next().unwrap_or("?");
+    let rssi = after
+        .trim_start_matches(',')
+        .split(',')
+        .next()
+        .unwrap_or("?");
 
     // Skip duplicates: the same SSID is usually heard on several BSSIDs.
     let mut needle = heapless::String::<120>::new();
@@ -450,8 +461,10 @@ pub fn spawn<B>(
     control: &'static Control<'static>,
     wifi_iface: Iface<'static>,
 ) where
-    B: Binding<<peripherals::USB_OTG_HS as usb::Instance>::Interrupt, usb::InterruptHandler<peripherals::USB_OTG_HS>>
-        + 'static,
+    B: Binding<
+            <peripherals::USB_OTG_HS as usb::Instance>::Interrupt,
+            usb::InterruptHandler<peripherals::USB_OTG_HS>,
+        > + 'static,
 {
     let mut usb_drv_cfg = embassy_stm32::usb::Config::default();
     // CN9 supplies VBUS whenever a cable is present; the sense pin is not
@@ -486,7 +499,11 @@ pub fn spawn<B>(
     let host_mac = [0x02, 0xBA, 0x65, 0x00, 0x00, 0x02];
 
     static NCM_STATE: StaticCell<NcmState> = StaticCell::new();
-    let ncm = CdcNcmClass::new(&mut builder, NCM_STATE.init(NcmState::new()), NcmConfig::new(host_mac));
+    let ncm = CdcNcmClass::new(
+        &mut builder,
+        NCM_STATE.init(NcmState::new()),
+        NcmConfig::new(host_mac),
+    );
     spawner.spawn(defmt::unwrap!(usb_task(builder.build())));
 
     static NET_STATE: StaticCell<NetState<4, 4>> = StaticCell::new();
@@ -505,10 +522,7 @@ pub fn spawn<B>(
 
     static DEVICE: StaticCell<Device<'static>> = StaticCell::new();
     let iface = defmt::unwrap!(stack.add_iface_borrowed(DEVICE.init(device)));
-    defmt::unwrap!(iface.add_ip_addr(IpCidr::new(
-        IpAddr::V4(Ipv4Addr::new(192, 168, 7, 1)),
-        24
-    )));
+    defmt::unwrap!(iface.add_ip_addr(IpCidr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 7, 1)), 24)));
     // Hand the host 192.168.7.10..20 — the same range the sand-portal uses.
     let dhcp = DhcpServerConfig::new(
         Ipv4Addr::new(192, 168, 7, 10),

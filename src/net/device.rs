@@ -22,6 +22,12 @@ pub struct Socket {
     pub rx_buffer: TmMutex<Vec<u8, 2048>>,
 }
 
+impl Default for Socket {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Socket {
     /// Create a new socket
     pub const fn new() -> Self {
@@ -136,9 +142,9 @@ pub struct NetworkDevice {
 impl NetworkDevice {
     /// Create a new network device
     pub const fn new(processor: &'static AtProcessor) -> Self {
-        const SOCKET: Socket = Socket::new();
         Self {
-            sockets: [SOCKET; MAX_SOCKETS],
+            // Inline `const` block: repeats a non-`Copy` value without a named constant.
+            sockets: [const { Socket::new() }; MAX_SOCKETS],
             processor,
             link_state: AtomicU8::new(0),
         }
@@ -454,7 +460,11 @@ impl NetworkDevice {
 
             // Try to receive a data response
             if let Some(response) = slot.try_receive_data_response() {
-                if let crate::at::AtResponse::Data { prefix, content: _content } = response {
+                if let crate::at::AtResponse::Data {
+                    prefix,
+                    content: _content,
+                } = response
+                {
                     if prefix.as_str() == "STATUS" {
                         // Parse overall status
                         // Format varies - simplified for now

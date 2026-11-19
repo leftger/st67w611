@@ -65,7 +65,7 @@ async fn main(_spawner: Spawner) {
 
     // Configure WIFI_RDY as input with EXTI
     info!("Configuring WIFI_RDY (PB6) with EXTI...");
-    let mut wifi_rdy = ExtiInput::new(p.PB6, p.EXTI6, Pull::None, Irqs);
+    let wifi_rdy = ExtiInput::new(p.PB6, p.EXTI6, Pull::None, Irqs);
     info!("  Initial WIFI_RDY state: {}", wifi_rdy.is_high());
 
     // Wait required delay before enabling chip

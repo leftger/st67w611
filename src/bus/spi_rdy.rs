@@ -17,7 +17,6 @@ const SPI_HEADER_MAGIC: u16 = 0x55AA;
 /// Maximum SPI transfer size
 const MAX_SPI_XFER: usize = 2048;
 
-
 /// ST67W611 SPI protocol header (8 bytes, little-endian)
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]

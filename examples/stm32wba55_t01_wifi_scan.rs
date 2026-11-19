@@ -10,7 +10,7 @@ use embassy_executor::Spawner;
 use embassy_stm32::{
     bind_interrupts,
     exti::ExtiInput,
-    gpio::{Input, Level, Output, Pull, Speed},
+    gpio::{Level, Output, Pull, Speed},
     rcc::{
         AHB5Prescaler, AHBPrescaler, APBPrescaler, PllDiv, PllMul, PllPreDiv, PllSource, Sysclk,
         VoltageScale,
@@ -23,7 +23,6 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
 use st67w611::bus::SpiTransportRdy;
-use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 // Bind EXTI interrupt for WIFI_RDY pin (PB6 → EXTI6)
@@ -34,11 +33,6 @@ bind_interrupts!(struct Irqs {
 // Static signals for RDY flow control
 static TXN_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static HDR_ACK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-
-// Type aliases
-use embassy_stm32::mode::Async;
-use embassy_stm32::spi::mode::Master;
-type SpiType = Spi<'static, Async, Master>;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -115,7 +109,7 @@ async fn main(spawner: Spawner) {
     }
 
     // Spawn RDY monitor task - handles interrupts and signals transport
-    unwrap!(spawner.spawn(rdy_monitor_task(wifi_rdy)));
+    spawner.spawn(unwrap!(rdy_monitor_task(wifi_rdy)));
 
     // Short wait for module stabilization
     Timer::after(Duration::from_millis(100)).await;

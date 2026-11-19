@@ -56,10 +56,10 @@ pub fn parse_url(url: &str) -> Result<ParsedUrl> {
     let url = url.trim();
 
     // Parse scheme
-    let (scheme, rest) = if url.starts_with("https://") {
-        (UrlScheme::Https, &url[8..])
-    } else if url.starts_with("http://") {
-        (UrlScheme::Http, &url[7..])
+    let (scheme, rest) = if let Some(rest) = url.strip_prefix("https://") {
+        (UrlScheme::Https, rest)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        (UrlScheme::Http, rest)
     } else {
         // Assume HTTP if no scheme
         (UrlScheme::Http, url)
@@ -335,27 +335,14 @@ impl HttpClient {
         let mut response_buffer = [0u8; 2048];
         let mut total_received = 0;
 
-        // Read response with timeout
+        // Read the response. This is a single read: the whole answer is assumed
+        // to arrive in one chunk. A complete implementation would loop until
+        // `Content-Length` bytes or EOF (or decode chunked encoding), bounded by
+        // the timeout.
         let response_timeout = embassy_time::Instant::now() + self.timeout;
-
-        while embassy_time::Instant::now() < response_timeout
-            && total_received < response_buffer.len()
-        {
-            match embedded_io_async::Read::read(
-                &mut socket,
-                &mut response_buffer[total_received..],
-            )
-            .await
-            {
-                Ok(n) if n > 0 => {
-                    total_received += n;
-                    // For now, we'll assume we got the full response after one
-                    // read. A proper implementation would check for
-                    // Content-Length or chunked encoding.
-                    break;
-                }
-                Ok(_) => break,
-                Err(_) => break,
+        if embassy_time::Instant::now() < response_timeout {
+            if let Ok(n) = embedded_io_async::Read::read(&mut socket, &mut response_buffer).await {
+                total_received = n;
             }
         }
 

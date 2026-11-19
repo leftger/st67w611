@@ -6,17 +6,34 @@ authors = ["Gerzain Mata <leftger@gmail.com>"]
 description = "Async no_std driver for ST67W611 WiFi modules using Embassy framework"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/leftger/st67w611"
+readme = "README.md"
 keywords = ["embedded", "wifi", "embassy", "async", "no-std"]
 categories = ["embedded", "no-std", "network-programming"]
+# Lowest toolchain the T01 library was built with (1.90 through current stable);
+# nothing older was available to test.
+rust-version = "1.90"
+# Dev tooling and the board crates are not part of the library. (`boards/*` have
+# their own Cargo.toml, so cargo already leaves them out; listed for clarity.)
+exclude = ["/scripts/", "/boards/", "/.claude/", "/.cargo/", "/.editorconfig"]
+
+[package.metadata.docs.rs]
+# Exactly one firmware feature is meant to be active; document the default.
+features = ["mission-t01"]
 
 [dependencies]
-# All embassy crates come from the git checkout (fork @ 63534e797) so the whole
-# workspace shares one source: mixing a path source with a crates.io source for
-# the same crate yields two distinct `embassy_time`/`embassy_sync` types and a
-# wall of type-mismatch errors.
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a95ebbc478baf6ae6eddb00ae821ced" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a95ebbc478baf6ae6eddb00ae821ced" }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a95ebbc478baf6ae6eddb00ae821ced" }
+# All embassy crates come from one pinned upstream git revision, so the whole
+# build shares one source: mixing git and crates.io copies of the same crate
+# yields two distinct `embassy_time`/`embassy_sync` types and a wall of
+# type-mismatch errors.
+#
+# Each also carries a `version`. Cargo builds from the git source and ignores the
+# version locally; `cargo publish` drops the `git` part and keeps the version,
+# which is what crates.io needs. The released embassy-executor 0.10, embassy-time
+# 0.5 and embassy-sync 0.8 were checked to build and pass the unit tests with the
+# T01 library, so they are not what blocks a release (see `embassy-net` below).
+embassy-executor = { version = "0.10", git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a95ebbc478baf6ae6eddb00ae821ced" }
+embassy-time = { version = "0.5", git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a95ebbc478baf6ae6eddb00ae821ced" }
+embassy-sync = { version = "0.8", git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a95ebbc478baf6ae6eddb00ae821ced" }
 embassy-futures = "0.1"
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
@@ -35,11 +52,14 @@ embedded-tls = { version = "0.19", optional = true, default-features = false }
 
 # Xarxa-based embassy-net for the T02 raw-L2 driver.
 #
-# crates.io embassy-net 0.9.1 is still smoltcp-based; the xarxa migration only
-# exists in the embassy git repository (branch `feat/n6-drivers` /
-# `upstream/update-xarxa5`). Until it is released, this points at the local
-# checkout. Switch to plain `version = "0.9"` once xarxa ships on crates.io.
-embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a95ebbc478baf6ae6eddb00ae821ced", optional = true, default-features = false, features = [
+# RELEASE BLOCKER for crates.io. The released embassy-net 0.9.1 is smoltcp-based
+# and depends on `smoltcp`; the pinned git revision is *also* versioned 0.9.1 but
+# is xarxa-based (it depends on `xarxa`) and has features the release lacks
+# (`ipv4`, `ipv6`, `medium-ethernet`, `tcp-listener`, ...). Same version number,
+# different code. So `cargo publish` cannot resolve this dependency until the
+# xarxa-based embassy-net is released. When it is, drop `git`/`rev` here (and for
+# `embassy-net-driver-channel`) and delete the `[patch.crates-io]` section below.
+embassy-net = { version = "0.9", git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a95ebbc478baf6ae6eddb00ae821ced", optional = true, default-features = false, features = [
     "medium-ethernet",
     "ipv4",
     "ipv6",
@@ -48,7 +68,7 @@ embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a
     "dhcpv4",
     "dns",
 ] }
-embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a95ebbc478baf6ae6eddb00ae821ced", optional = true }
+embassy-net-driver-channel = { version = "0.4", git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a95ebbc478baf6ae6eddb00ae821ced", optional = true }
 
 [dev-dependencies]
 # (intentionally empty: see the target-scoped block below)
@@ -105,40 +125,36 @@ tls = ["dep:embedded-tls"]
 defmt = ["dep:defmt", "embassy-executor/defmt", "embassy-sync/defmt", "embassy-time/defmt", "heapless/defmt-03"]
 log = ["dep:log"]
 
-# Diagnostic examples (work with both T01 and T02 firmware)
+# Diagnostic examples (work with both T01 and T02 firmware). All examples log
+# through defmt, which `st67w611::Error` only implements with the `defmt` feature.
 [[example]]
 name = "stm32wba55_spi_diagnostic"
-required-features = []
+required-features = ["defmt"]
 
 [[example]]
 name = "stm32wba55_diagnostic_wifi_scan"
-required-features = []
+required-features = ["defmt"]
 
 [[example]]
 name = "stm32wba55_minimal_test"
-required-features = []
+required-features = ["defmt"]
 
 [[example]]
 name = "stm32wba55_debug_rdy"
-required-features = []
+required-features = ["defmt"]
 
 [[example]]
 name = "stm32wba55_firmware_programmer"
-required-features = []
+required-features = ["defmt"]
 
 # T01 examples (AT command-based networking on module)
 [[example]]
 name = "stm32wba55_t01_wifi_scan"
-required-features = ["mission-t01"]
+required-features = ["mission-t01", "defmt"]
 
 [[example]]
 name = "stm32wba55_t01_wifi_test"
-required-features = ["mission-t01"]
-
-# T02 examples (embassy-net on host MCU)
-[[example]]
-name = "stm32wba55_t02_embassy_net"
-required-features = ["mission-t02"]
+required-features = ["mission-t01", "defmt"]
 
 [profile.release]
 codegen-units = 1
@@ -149,16 +165,17 @@ lto = "fat"
 opt-level = "z"
 overflow-checks = false
 
-# TEMPORARY, local-development only.
+# TEMPORARY, development only (cargo ignores this section when publishing).
 #
 # The xarxa-based embassy-net is not on crates.io yet, so the `embassy-net` /
-# `embassy-net-driver-channel` dependencies above point at a local embassy
-# checkout. That checkout's `embassy-time` uses a *path* dependency on
+# `embassy-net-driver-channel` dependencies above come from the pinned embassy git
+# revision. That revision's `embassy-time` uses a *path* dependency on
 # `embassy-time-driver`, which cannot coexist with the crates.io copy (both
-# declare `links = "embassy-time"`). Patching both to the checkout unifies them.
+# declare `links = "embassy-time"`). Patching both to the same revision unifies
+# them.
 #
-# Remove this section, and switch the dependencies above to version
-# requirements, once xarxa is released. It must not ship in a published crate.
+# Remove this section, and drop `git`/`rev` from the dependencies above, once
+# xarxa is released.
 [patch.crates-io]
 embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a95ebbc478baf6ae6eddb00ae821ced" }
 embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "398bd5540a95ebbc478baf6ae6eddb00ae821ced" }

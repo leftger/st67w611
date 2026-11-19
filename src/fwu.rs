@@ -208,7 +208,10 @@ mod tests {
     #[test]
     fn update_rejects_bad_chunk_size() {
         let fwu = Fwu::new(Mock::default());
-        assert_eq!(block_on(fwu.update(&[0u8; 4], 0)), Err(Error::InvalidParameter));
+        assert_eq!(
+            block_on(fwu.update(&[0u8; 4], 0)),
+            Err(Error::InvalidParameter)
+        );
         assert_eq!(
             block_on(fwu.update(&[0u8; 4], MAX_CHUNK + 1)),
             Err(Error::InvalidParameter)

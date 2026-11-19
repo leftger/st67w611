@@ -87,38 +87,37 @@ async fn main(spawner: Spawner) {
 ## Quick Start (T02 Firmware with embassy-net)
 
 ```rust
-use st67w611::net::xarxa::{self, State};
-use embassy_net::{Stack, StackResources};
-use embassy_sync::signal::Signal;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use core::sync::atomic::AtomicBool;
+use st67w611::net::xarxa::{self, HardwareAddress, State, WifiDevice};
+use embassy_net::{Stack, StackStorage, StaticPool};
 
-static READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-static HDR_ACK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-static RDY_LEVEL: AtomicBool = AtomicBool::new(false);
-static STATE: static_cell::StaticCell<State<4, 4>> = static_cell::StaticCell::new();
+// One packet pool for the whole stack: 1514 bytes = Ethernet MTU.
+static POOL: StaticPool<1514, 16> = StaticPool::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let spi = /* your SPI setup */;
-    let cs = /* your CS pin */;
+    let spi = /* your SPI setup: mode 0, MSB first */;
+    let cs = /* your CS pin; the driver drives it active-high */;
+    // `ready` / `hdr_ack` are signalled from the RDY pin's rising / falling edge.
 
-    // Driver + Wi-Fi control handle (read the MAC with AT+CIPSTAMAC? first, or
-    // use a locally administered address).
+    // Driver + Wi-Fi control handle. The MAC here is a placeholder, replaced
+    // below with the module's own.
     let (device, runner, control) =
-        xarxa::new(spi, cs, &READY, &HDR_ACK, &RDY_LEVEL, STATE.init(State::new()), mac);
-
+        xarxa::new(spi, cs, ready, hdr_ack, rdy_level, STATE.init(State::new()), placeholder_mac);
     spawner.spawn(wifi_runner(runner)).unwrap();
 
-    let mut device = device;
-    let resources = make_static!(StackResources::<3>::new());
-    let (stack, stack_runner) = Stack::new(resources, seed);
-    stack.add_iface_borrowed(&mut device).unwrap();
-    spawner.spawn(net_runner(stack_runner)).unwrap();
+    // The module filters inbound unicast by its own station MAC, so the stack
+    // must transmit with it: read it, then attach the interface and start DHCP.
+    control.wait_ready(Duration::from_secs(15)).await.unwrap();
+    let mac = control.station_mac().await.unwrap();
+    control.set_hardware_address(HardwareAddress::Ethernet(mac));
 
-    // Connect (raises the channel link state) and use the stack.
+    let (stack, stack_runner) = Stack::new(STACK_STORAGE.init(StackStorage::new()), &POOL, seed);
+    spawner.spawn(net_runner(stack_runner)).unwrap();
+    let iface = stack.add_iface_borrowed(DEVICE.init(device)).unwrap();
+    iface.set_dhcpv4(Some(Default::default())).unwrap();
+
+    // Connect (raises the link, which starts DHCP) and use the stack.
     control.connect("SSID", "password").await.unwrap();
-    control.set_ipv6(true).await.unwrap();
 }
 
 #[embassy_executor::task]
@@ -127,7 +126,8 @@ async fn wifi_runner(runner: xarxa::Runner<'static, /* SPI */, /* CS */, 4, 4>) 
 }
 ```
 
-See the `examples/` directory for complete working examples.
+Complete, working versions of this live in `boards/nucleo-wba65ri` (see below):
+`src/t02.rs` is the bring-up above, and `t02_net_check` / `t02_web_server` use it.
 
 ## Examples
 
@@ -144,11 +144,44 @@ See the `examples/` directory for complete working examples.
 - `stm32wba55_t01_wifi_scan` - WiFi scan using SpiTransportRdy
 - `stm32wba55_t01_wifi_test` - WiFi test with AT commands
 
-### T02 examples
+### NUCLEO-WBA65RI proof-of-concepts: matching T01 and T02 pairs
 
-- `stm32wba55_t02_embassy_net` - embassy-net integration (legacy `mission-t02`)
+`boards/nucleo-wba65ri` carries the same two demos for each firmware profile, so
+you can compare them directly. The only difference is **who runs TCP/IP**:
+
+| Demo | T01: the module runs TCP/IP | T02: the MCU runs TCP/IP (`embassy-net`) |
+|---|---|---|
+| Network self-check | `t01_net_check`: join, DNS, ping, SNTP, HTTP GET (6 checks) | `t02_net_check`: join, DHCP, DNS, SNTP, HTTP GET (5 checks; no ICMP client, so no ping) |
+| Host a website | `t01_web_server`: `AT+CIPSERVER`, the MCU answers over AT | `t02_web_server`: `TcpListener` on the MCU |
+
+The T02 server serves a small status page (`/`, `/json`, 404). The T01 server is a
+"mission control" dashboard: a live UTC clock from the module's own SNTP client, plus
+weather, the ISS position, people in space and an activity idea that the module
+fetched from other websites (`/api` is the JSON behind it).
+
+```sh
+# switch the module's firmware (over the air, via AT+OTA*; no UART bootloader)
+export X_CUBE_ST67W61=/path/to/x-cube-st67w61
+scripts/ncp_switch.sh t01        # or t02
+
+# run a demo (WIFI_SSID / WIFI_PASS are optional: without them the module's
+# stored network is used)
+WIFI_SSID=... WIFI_PASS=... scripts/poc.sh t01_net_check
+scripts/poc.sh t02_web_server
+```
+
+A demo needs the module on its own profile and says so if not. The old dashboard
+in `boards/nucleo-wba65ri/src/main.rs` is T02-only. Shared code lives in
+`boards/nucleo-wba65ri/src/`: `common.rs` (bring-up, Wi-Fi join), `t01.rs` (AT
+sockets), `t02.rs` (`embassy-net` bring-up), `site.rs` (the pages both servers
+share) and `dashboard.rs` (the T01 mission-control page).
 
 ### Building Examples
+
+The linker scripts the examples need (`link.x`, `defmt.x`) are passed by the root
+`build.rs`, for examples only. Don't add them to a local `.cargo/config.toml`'s
+`rustflags`: cargo merges that file into `boards/*`, whose own `build.rs` adds the
+same arguments, and the linker then reports `FLASH` defined twice.
 
 ```bash
 # Diagnostic examples (no special features required)
@@ -156,9 +189,19 @@ cargo build --example stm32wba55_spi_diagnostic --features defmt --release
 
 # T01 examples
 cargo build --example stm32wba55_t01_wifi_scan --features "mission-t01,defmt" --release
+```
 
-# T02 examples
-cargo build --example stm32wba55_t02_embassy_net --features "mission-t02,defmt" --release
+The T02 examples are the `t02_*` binaries in `boards/nucleo-wba65ri` (see above).
+
+### Running the unit tests
+
+The library is `no_std`, but its tests run on the host. Name the host target
+explicitly, because a local `.cargo/config.toml` that sets an embedded default
+target would otherwise make `cargo test` look for `std` on the wrong platform:
+
+```bash
+cargo test --lib --target "$(rustc -vV | sed -n 's/host: //p')"
+cargo test --lib --target "$(rustc -vV | sed -n 's/host: //p')" --no-default-features --features mission-t02
 ```
 
 ## Architecture

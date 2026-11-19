@@ -94,7 +94,9 @@ impl<T: AtTransport> Net<T> {
     /// With buffered mode on, incoming data is pulled with
     /// [`receive`](Self::receive).
     pub async fn set_receive_mode(&self, buffered: bool) -> Result<()> {
-        self.transport.exec_ok(cmd::set_receive_mode(buffered)).await
+        self.transport
+            .exec_ok(cmd::set_receive_mode(buffered))
+            .await
     }
 
     /// Set a socket's receive buffer length (`AT+CIPRECVBUF=<link>,<len>`).
@@ -158,7 +160,9 @@ impl<T: AtTransport> Net<T> {
         self.transport.exec(cmd::dns_lookup(hostname)).await
     }
 
-    /// Resolve a hostname for a specific address family (`0` = auto).
+    /// Resolve a hostname for a specific address family: `2` = IPv4 only, `3` =
+    /// IPv6 only. The module rejects `0`, and `1` (IPv4 then IPv6) was rejected
+    /// too when tested; see [`cmd::dns_lookup_typed`].
     pub async fn lookup_typed(&self, hostname: &str, address_type: i32) -> Result<AtOutput> {
         self.transport
             .exec(cmd::dns_lookup_typed(hostname, address_type))
@@ -222,7 +226,13 @@ impl<T: AtTransport> Net<T> {
     // ---- TCP server ------------------------------------------------------
 
     /// Start a TCP server (`AT+CIPSERVER=1,...`).
-    pub async fn start_server(&self, port: u16, ip: &str, backlog: u16, timeout: u32) -> Result<()> {
+    pub async fn start_server(
+        &self,
+        port: u16,
+        ip: &str,
+        backlog: u16,
+        timeout: u32,
+    ) -> Result<()> {
         self.transport
             .exec_ok(cmd::start_server(port, ip, backlog, timeout))
             .await
@@ -281,7 +291,9 @@ impl<T: AtTransport> Net<T> {
         // OK or ERROR are both acceptable: the file may not exist yet.
         let _ = self
             .transport
-            .exec(crate::at::command::filesystem::fs_delete(cert_type.filename()))
+            .exec(crate::at::command::filesystem::fs_delete(
+                cert_type.filename(),
+            ))
             .await?;
         Ok(())
     }
@@ -307,10 +319,11 @@ impl<T: AtTransport> Net<T> {
 
     /// Resolve a hostname to an IPv4 address (`AT+CIPDOMAIN`).
     pub async fn resolve(&self, hostname: &str) -> Result<Ipv4Address> {
-        self.resolve_typed(hostname, 0).await
+        // IPv4 only: the result is parsed into an `Ipv4Address`.
+        self.resolve_typed(hostname, 2).await
     }
 
-    /// Resolve a hostname for a specific address family (`0` = auto).
+    /// Resolve a hostname for a specific address family (see [`Self::lookup_typed`]).
     pub async fn resolve_typed(&self, hostname: &str, address_type: i32) -> Result<Ipv4Address> {
         let out = self.lookup_typed(hostname, address_type).await?;
         let value = out
@@ -397,9 +410,12 @@ mod tests {
     fn lookup_and_dns() {
         let net = Net::new(Mock::default());
         block_on(net.lookup("example.com")).unwrap();
-        assert_eq!(net.transport().last(), "AT+CIPDOMAIN=\"example.com\",0");
+        assert_eq!(net.transport().last(), "AT+CIPDOMAIN=\"example.com\",2");
         block_on(net.set_dns(true, "8.8.8.8", Some("8.8.4.4"))).unwrap();
-        assert_eq!(net.transport().last(), "AT+CIPDNS=1,\"8.8.8.8\",\"8.8.4.4\"");
+        assert_eq!(
+            net.transport().last(),
+            "AT+CIPDNS=1,\"8.8.8.8\",\"8.8.4.4\""
+        );
         block_on(net.dns()).unwrap();
         assert_eq!(net.transport().last(), "AT+CIPDNS?");
     }
@@ -430,7 +446,7 @@ mod tests {
             ..Default::default()
         });
         let ip = block_on(net.resolve("example.com")).unwrap();
-        assert_eq!(net.transport().last(), "AT+CIPDOMAIN=\"example.com\",0");
+        assert_eq!(net.transport().last(), "AT+CIPDOMAIN=\"example.com\",2");
         assert_eq!(ip.octets(), [93, 184, 216, 34]);
     }
 

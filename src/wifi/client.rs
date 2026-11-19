@@ -291,9 +291,7 @@ impl<T: AtTransport> WiFi<T> {
 
     /// Configure antenna diversity (`AT+CWANT`).
     pub async fn set_antenna(&self, enable: u32, a: u32, b: u32) -> Result<()> {
-        self.transport
-            .exec_ok(cmd::set_antenna(enable, a, b))
-            .await
+        self.transport.exec_ok(cmd::set_antenna(enable, a, b)).await
     }
 
     /// Query the antenna configuration.
@@ -347,10 +345,7 @@ mod tests {
         block_on(wifi.connect("ssid", "password")).unwrap();
         // Trailing comma: the W61 dialect keeps the parameter list open for the
         // optional BSSID / WEP arguments that may follow. See w61_at_wifi.c.
-        assert_eq!(
-            wifi.transport().last(),
-            "AT+CWJAP=\"ssid\",\"password\","
-        );
+        assert_eq!(wifi.transport().last(), "AT+CWJAP=\"ssid\",\"password\",");
         block_on(wifi.connect_stored("ssid")).unwrap();
         assert_eq!(wifi.transport().last(), "AT+CWJAPS=\"ssid\"");
     }

@@ -63,6 +63,12 @@ pub struct ResponseSlot {
     is_multi_response: TmMutex<bool>,
 }
 
+impl Default for ResponseSlot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResponseSlot {
     /// Create a new response slot
     pub const fn new() -> Self {
@@ -139,12 +145,19 @@ pub struct ResponseSlotPool {
     slots: [ResponseSlot; MAX_RESPONSE_SLOTS],
 }
 
+impl Default for ResponseSlotPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResponseSlotPool {
     /// Create a new slot pool
     pub const fn new() -> Self {
-        const SLOT: ResponseSlot = ResponseSlot::new();
         Self {
-            slots: [SLOT; MAX_RESPONSE_SLOTS],
+            // An inline `const` block repeats a non-`Copy` value without a named
+            // constant (which clippy flags: it is large and has interior mutability).
+            slots: [const { ResponseSlot::new() }; MAX_RESPONSE_SLOTS],
         }
     }
 
@@ -171,6 +184,12 @@ pub struct AtProcessor {
     socket_events: Channel<CriticalSectionRawMutex, SocketEvent, 16>,
     /// IPD data channel for received socket data
     ipd_data: Channel<CriticalSectionRawMutex, IpdData, 4>,
+}
+
+impl Default for AtProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AtProcessor {

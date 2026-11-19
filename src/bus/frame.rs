@@ -182,9 +182,17 @@ impl Header {
         let magic = MAGIC.to_le_bytes();
         let len = self.len.to_le_bytes();
         // byte 4: version:2 | rx_stall:1 | flags:5
-        let control = (self.version & 0b11) | ((self.rx_stall as u8) << 2) | ((self.flags & 0b1_1111) << 3);
+        let control =
+            (self.version & 0b11) | ((self.rx_stall as u8) << 2) | ((self.flags & 0b1_1111) << 3);
         [
-            magic[0], magic[1], len[0], len[1], control, self.traffic_type, 0, 0,
+            magic[0],
+            magic[1],
+            len[0],
+            len[1],
+            control,
+            self.traffic_type,
+            0,
+            0,
         ]
     }
 

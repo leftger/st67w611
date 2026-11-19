@@ -6,7 +6,7 @@
 //!
 //! Unsolicited Wi-Fi events (`WIFI GOT IP`, disconnect notifications, …) are
 //! not part of the request/response AT transport; they are delivered by the
-//! driver ([`Driver::next_wifi_event`](crate::Driver::next_wifi_event)).
+//! driver (`Driver::next_wifi_event`).
 
 pub mod client;
 
