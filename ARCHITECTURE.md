@@ -96,12 +96,43 @@ which is what `cyw43` and `enc28j60` do, and what `net::xarxa` does here.
   stack, and the module's RDY line. Received `NetworkSta`/`NetworkAp` frames
   are copied into `PacketBuf`s and pushed to the channel; `AtCommand` frames
   feed the line parser.
-* **`Control`** — `at()`, `connect()`, `disconnect()`, `scan()`, `set_ipv6()`.
+* **`Control`** — `at()`, `at_with_payload()`, `connect()`, `disconnect()`,
+  `scan()`, `ping()`, `recv()`, `socket_event()`, `set_ipv6()`, `set_link()`.
   `connect()` raises the channel link state, which is what lets the stack start
-  using the interface (DHCP, etc.).
+  using the interface (DHCP, etc.); `set_link()` does the same when the module
+  re-joined a stored network on its own.
 
 The global xarxa packet pool holds the buffers, so the channel queues cost a
 handful of bytes per slot, not a whole frame each.
+
+### AT transport notes (measured on an ST67W611, SDK 2.0.97)
+
+The `Control` handle is also a plain `AtTransport`, and it works on a **T01**
+module too: the AT link is the same SPI link in both profiles, which is what lets
+the typed `WiFi` / `Net` / `Fwu` clients run over it. The module's AT behaviour
+differs from what a line-oriented parser expects in several ways, and the runner
+handles each:
+
+* **Payload commands answer `OK` and then `>`**, often in one SPI frame
+  (`\r\nOK\r\n\r\n>`), so the first `OK` must not end the transaction: the payload
+  is still owed. For `AT+CIPSEND` the `>` has **no trailing newline**, so it is
+  recognised without waiting for one. Completion after the payload is
+  `Recv <n> bytes` (or `SEND OK`).
+* **Some results arrive after the command's `OK`**, as unsolicited lines:
+  `+CWLAP` scan results, `+PING:<ms>ms` (`Control::ping` waits for it).
+* **The module pushes socket events on its own**: `+CIP:<link>,CONNECTED` /
+  `DISCONNECTED` and `+IPD:<link>,<len>`. `AT+CIPSTATE?` lists no server-side
+  connections, so a server cannot poll for clients; it consumes
+  `Control::socket_event()` instead.
+* **`AT+CIPRECVDATA` replies are length-prefixed binary**
+  (`+CIPRECVDATA:<len>,<len raw bytes>`), captured by length into
+  `Control::recv()` rather than split into lines (which are capped at
+  `AT_LINES_MAX` and would mangle `\r\n` inside the data).
+* **`AT+CIPDOMAIN="<host>",<type>`** needs `2` (IPv4 only) or `3` (IPv6 only);
+  `0` and `1` are answered with `ERROR`.
+* **OTA (`AT+OTASEND`)**: the 512-byte FWU header is sent as its own `OTASEND`,
+  then the body in chunks that are a multiple of 256 bytes. The same OTA path
+  switches the module between the T01 and T02 images in either direction.
 
 ### IPv6
 
