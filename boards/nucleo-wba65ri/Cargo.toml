@@ -2,6 +2,8 @@
 name = "nucleo-wba65ri"
 version = "0.1.0"
 edition = "2021"
+# A firmware example, not a library: never publish it.
+publish = false
 # `src/bin/` holds the extra bring-up tests, so `cargo run` needs to be told
 # which one is the real firmware.
 default-run = "nucleo-wba65ri"

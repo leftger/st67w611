@@ -2,6 +2,8 @@
 name = "stm32n6570-dk"
 version = "0.1.0"
 edition = "2021"
+# A firmware example, not a library: never publish it.
+publish = false
 
 # Standalone board crate: `embassy-stm32` allows exactly one chip feature, so
 # the N6 example cannot live alongside the main crate's WBA55 dev-deps.
