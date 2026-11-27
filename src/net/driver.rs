@@ -29,9 +29,9 @@
 //! let response = http.get(spi, "https://api.example.com").await?;
 //!
 //! // MQTT
-//! let mqtt = driver.mqtt_client(0);
-//! mqtt.connect(spi, "broker", 1883, &config).await?;
-//! mqtt.publish(spi, "topic", "data", qos, false).await?;
+//! let mqtt = driver.mqtt();
+//! mqtt.connect(0, "broker", 1883, false).await?;
+//! mqtt.publish(0, "topic", "data", MqttQos::AtMostOnce, false).await?;
 //! ```
 //!
 //! ### T02 — TCP/IP on the host (`mission-t02`)

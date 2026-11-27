@@ -7,8 +7,10 @@ contain breaking changes).
 
 ## [Unreleased]
 
-Everything since 0.1.0, the first crates.io release (2026-01-27). Not yet
-published: see "Release status" at the end.
+## [0.2.0] - 2026-11-27
+
+Everything since 0.1.0, the first crates.io release (2026-01-27). See "Release
+status" at the end for crates.io vs. git packaging details.
 
 ### Added
 
@@ -115,15 +117,19 @@ published: see "Release status" at the end.
 
 ### Release status
 
-`cargo publish` is blocked until the xarxa-based `embassy-net` is released: the
-`mission-t02` feature depends on it through a git revision, and the released
-`embassy-net` 0.9.1 (smoltcp-based) lacks the features it uses. The T01 library
-builds and passes its tests against released `embassy-*` crates only. See the
-comments in `Cargo.toml`.
+The crates.io `0.2.0` release is published **T01-only** (`mission-t01` and
+`tls`), with `mission-t02`, `embassy-net`, and `embassy-net-driver-channel`
+temporarily omitted from the crates.io manifest because the xarxa-based
+`embassy-net` is not yet released on crates.io (`embassy-net` 0.9.1 on
+crates.io is still smoltcp-based and lacks the features `mission-t02` uses).
+Full T01 + T02 support is available from the `v0.2.0` git tag / repository.
+Once xarxa-based `embassy-net` is released on crates.io, `mission-t02` can be
+restored in a follow-up crates.io release.
 
 ## [0.1.0] - 2026-01-27
 
 First release: async Embassy driver for the ST67W611 over SPI with AT commands.
 
-[Unreleased]: https://github.com/leftger/st67w611/compare/c0d5465...HEAD
+[Unreleased]: https://github.com/leftger/st67w611/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/leftger/st67w611/compare/c0d5465...v0.2.0
 [0.1.0]: https://github.com/leftger/st67w611/commit/c0d5465

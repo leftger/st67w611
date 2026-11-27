@@ -41,6 +41,11 @@
 //! | Sockets | AT sockets via `net::NetworkDevice` | `embassy-net` sockets via `net::xarxa` |
 //! | Enter via | [`Driver`] | `driver_t02::Driver` (also exported as [`Driver`]) |
 //!
+//! > **crates.io 0.2.0 note:** `0.2.0` on crates.io is published with T01
+//! > (`mission-t01`) only, because `mission-t02` depends on the xarxa-based
+//! > `embassy-net` which has not yet been released on crates.io. For T02, depend
+//! > on the git repository (`tag = "v0.2.0"` or `master`).
+//!
 //! Everything above the socket layer is **identical** on both firmwares: the
 //! same clients, reached the same way.
 //!
@@ -60,17 +65,17 @@
 //!
 //! # Example (T01 Firmware)
 //!
-//! ```no_run,ignore
+//! ```ignore
 //! use st67w611::{
 //!     at::processor::AtProcessor, bus::SpiTransport, Config, Driver,
-//!     NetworkDevice, TlsManager, WiFiMode, SocketProtocol,
+//!     NetworkDevice, WiFiMode,
 //! };
 //! use embassy_executor::Spawner;
 //!
 //! #[embassy_executor::main]
 //! async fn main(spawner: Spawner) {
 //!     // Create static resources (see examples for complete setup)
-//!     let driver = /* create driver with make_static! */;
+//!     let driver: &'static Driver<_, _> = /* Driver::new(spi, processor, network, Config::default()) */;
 //!
 //!     // Spawn background tasks
 //!     spawner.spawn(rx_task(driver)).unwrap();
@@ -86,23 +91,30 @@
 //! }
 //! ```
 //!
-//! # Example (T02 Firmware with embassy-net)
+//! # Example (T02 Firmware with embassy-net, git dependency)
 //!
-//! ```no_run,ignore
-//! use st67w611::net::{new_driver, State, MTU};
-//! use embassy_net::{Stack, StackResources};
+//! ```ignore
+//! use st67w611::net::xarxa::{self, HardwareAddress, State};
+//! use embassy_net::{Stack, StackStorage, StaticPool};
+//!
+//! static POOL: StaticPool<1514, 16> = StaticPool::new();
 //!
 //! #[embassy_executor::main]
 //! async fn main(spawner: Spawner) {
-//!     // Create driver state
-//!     let state = make_static!(State::<MTU, 4, 4>::new());
-//!     let (device, runner) = new_driver(spi, cs, state);
-//!
-//!     // Spawn the runner task
+//!     let (device, runner, control) =
+//!         xarxa::new(spi, cs, ready, hdr_ack, rdy_level, STATE.init(State::new()), placeholder_mac);
 //!     spawner.spawn(wifi_runner(runner)).unwrap();
 //!
-//!     // Use with embassy-net
-//!     let stack = Stack::new(device, config, resources, seed);
+//!     control.wait_ready(Duration::from_secs(15)).await.unwrap();
+//!     let mac = control.station_mac().await.unwrap();
+//!     control.set_hardware_address(HardwareAddress::Ethernet(mac));
+//!
+//!     let (stack, stack_runner) = Stack::new(STACK_STORAGE.init(StackStorage::new()), &POOL, seed);
+//!     spawner.spawn(net_runner(stack_runner)).unwrap();
+//!     let iface = stack.add_iface_borrowed(DEVICE.init(device)).unwrap();
+//!     iface.set_dhcpv4(Some(Default::default())).unwrap();
+//!
+//!     control.connect("SSID", "password").await.unwrap();
 //! }
 //! ```
 //!

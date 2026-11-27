@@ -1,6 +1,6 @@
 [package]
 name = "st67w611"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Gerzain Mata <leftger@gmail.com>"]
 description = "Async no_std driver for ST67W611 WiFi modules using Embassy framework"
@@ -12,9 +12,18 @@ categories = ["embedded", "no-std", "network-programming"]
 # Lowest toolchain the T01 library was built with (1.90 through current stable);
 # nothing older was available to test.
 rust-version = "1.90"
-# Dev tooling and the board crates are not part of the library. (`boards/*` have
-# their own Cargo.toml, so cargo already leaves them out; listed for clarity.)
-exclude = ["/scripts/", "/boards/", "/.claude/", "/.cargo/", "/.editorconfig"]
+# Dev tooling, vendor docs, repo-only guides, and board crates stay out of the
+# crates.io tarball (`boards/*` also have their own Cargo.toml with publish = false).
+exclude = [
+    "/scripts/",
+    "/boards/",
+    "/docs/",
+    "/.claude/",
+    "/.cargo/",
+    "/.editorconfig",
+    "/.gitignore",
+    "/ARCHITECTURE.md",
+]
 
 [package.metadata.docs.rs]
 # Exactly one firmware feature is meant to be active; document the default.

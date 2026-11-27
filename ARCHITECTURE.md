@@ -245,8 +245,8 @@ device.send_socket(spi, socket, data, timeout).await?;
 let http = driver.http_client();
 let response = http.get(spi, "https://api.example.com/data").await?;
 
-let mqtt = driver.mqtt_client(0);
-mqtt.subscribe(spi, "topic/test", MqttQos::AtLeastOnce).await?;
+let mqtt = driver.mqtt();
+mqtt.subscribe(0, "topic/test", MqttQos::AtLeastOnce).await?;
 ```
 
 ### T02 embassy-net

@@ -33,19 +33,24 @@ this is the higher-throughput option.
 cargo build --features "mission-t01,defmt" --release
 ```
 
-### T02 Firmware
+### T02 Firmware (git only until `embassy-net` xarxa is released)
 
 The TCP/IP stack runs **on the host MCU** using `embassy-net` (xarxa). The
 module acts as a WiFi MAC/PHY, passing raw Ethernet frames. You get the whole
 embassy-net stack — IPv4, IPv6, TCP, UDP, DHCP, DNS/mDNS, SLAAC, ICMP — and can
 add `embedded-tls` for HTTPS.
 
+> **crates.io `0.2.0` release note:** The `0.2.0` package on crates.io ships
+> **T01-only** (`mission-t01` and `tls`), because `mission-t02` depends on the
+> xarxa-based `embassy-net` which has not yet been published to crates.io. To
+> use T02, depend on the git repository (`tag = "v0.2.0"` or `master`).
+
 ```bash
-# T02: raw-L2 driver for the xarxa-based embassy-net stack
-cargo build --features "mission-t02,defmt" --release
+# T02: raw-L2 driver for the xarxa-based embassy-net stack (from git)
+cargo build --no-default-features --features "mission-t02,defmt" --release
 
 # ... plus TLS over TCP (`tls` works on either firmware)
-cargo build --features "mission-t02,tls,defmt" --release
+cargo build --no-default-features --features "mission-t02,tls,defmt" --release
 ```
 
 > Exactly one firmware feature is active: `mission-t01` (default) or
@@ -239,8 +244,9 @@ The driver is organized in layers:
 3. **Network Layer** (`net/`): T01 socket API, or the T02 xarxa driver and TLS
 4. **Protocol Layer**: WiFi, TLS, MQTT, HTTP abstractions (T01)
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and a feature-coverage
-comparison against the X-CUBE-ST67W61 network driver.
+See [ARCHITECTURE.md](https://github.com/leftger/st67w611/blob/master/ARCHITECTURE.md)
+for the full design and a feature-coverage comparison against the
+X-CUBE-ST67W61 network driver.
 
 ### SPI Frame Protocol
 
@@ -268,7 +274,7 @@ The driver is designed for `no_std` environments without heap allocation:
 
 ## Requirements
 
-- Rust nightly (for Embassy)
+- Rust 1.90+ (T01 on released crates) or Rust nightly (git-pinned Embassy / board crates)
 - STM32 microcontroller with SPI interface
 - ST67W611 WiFi module connected via SPI
 - T01 or T02 firmware flashed on the module
